@@ -1,8 +1,8 @@
-"""Hermes Monitor has no agent-side capabilities.
+"""Hermes Worker Monitor has no agent-side capabilities.
 
-The plugin ships a Desktop status-bar UI (``desktop/plugin.js``) and read-only
-dashboard routes (``dashboard/plugin_api.py``). This module exists so the agent
-plugin loader can import the package without registering anything.
+The plugin ships a Desktop status-bar UI (``desktop/plugin.js``) and one
+read-only dashboard route (``dashboard/plugin_api.py``). This module exists so
+the agent plugin loader can import the package without registering anything.
 """
 
 

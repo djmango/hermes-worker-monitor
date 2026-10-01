@@ -1,21 +1,19 @@
 /**
- * Hermes Monitor — desktop half.
+ * Hermes Worker Monitor — desktop half.
  *
- * Two footer items (STATUSBAR_AREAS.right):
- *   1. Worker  — animated spinner + count of running kanban cards, colored by
- *                the worst worker state (loop > stalled > active).
- *   2. Quote   — one compact group per provider reported by the backend, with
- *                its own usage bars / remaining balance, colored by threshold.
- *                The provider set is dynamic (1..N): nothing here is keyed on a
- *                provider id, the shape of each entry decides how it renders.
+ * One footer item (STATUSBAR_AREAS.right): an animated spinner and the count of
+ * running Kanban cards, colored by the worst worker state (loop > stalled >
+ * active). Opening the menu lists each running card, its title, assignee,
+ * runtime, last activity, and a link to Kanban.
  *
- * Both poll their own backend namespace via `ctx.rest` (namespace-relative
- * paths only — see the plugin contract). Periodic polling never bypasses the
- * backend cache; opening the menu on click re-fetches with `?fresh=1`.
+ * This fork is worker health only. There is no quota item, so the desktop half
+ * never asks the backend for provider data and no credential ever reaches it.
  *
- * Polling uses React Query `refetchInterval` (the app's shared QueryClient),
- * so the timers are torn down automatically when the item unmounts and the
- * plugin is disabled/hot-reloaded.
+ * Polling goes through `ctx.rest` (namespace-relative paths only — see the
+ * plugin contract) with React Query `refetchInterval`, so the timer is torn
+ * down automatically when the item unmounts and the plugin is disabled or
+ * hot-reloaded. Periodic polling never bypasses the backend cache. Opening the
+ * menu re-fetches with `?fresh=1`.
  *
  * Plain ESM, loaded uncompiled — UI is `jsx()` calls, not JSX syntax. Only
  * `@hermes/plugin-sdk`, `react`, and `react/jsx-runtime` resolve.
@@ -40,14 +38,13 @@ import {
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const ID = 'hermes-monitor'
+const ID = 'hermes-worker-monitor'
 
-// Polling cadences (ms). Never below 10s.
+// Polling cadence (ms). Never below 10s.
 const WORKER_INTERVAL_MS = 10_000
-const QUOTA_INTERVAL_MS = 300_000
 
 // Traffic-light colors for the worker states. Mid-saturation hues that stay
-// legible on both the light and dark themes (bars + status dots).
+// legible on both the light and dark themes (spinner + status dots).
 const GREEN = '#22c55e'
 const ORANGE = '#f59e0b'
 const RED = '#ef4444'
@@ -75,28 +72,6 @@ const FOOTER_ROW = {
 
 // -- pure helpers -------------------------------------------------------------
 
-function clampPct(value) {
-  if (!Number.isFinite(value)) return 0
-  return Math.max(0, Math.min(100, value))
-}
-
-function quotaColor(pct) {
-  if (pct > 90) return RED
-  if (pct >= 75) return ORANGE
-  return GREEN
-}
-
-function pad2(n) {
-  return String(n).padStart(2, '0')
-}
-
-/** epoch seconds -> local "HH:MM"; null/undefined/garbage -> "n/a". */
-function formatResetTime(epoch) {
-  if (!Number.isFinite(epoch)) return 'n/a'
-  const d = new Date(epoch * 1000)
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-}
-
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.floor(Number(totalSeconds) || 0))
   const h = Math.floor(s / 3600)
@@ -117,33 +92,6 @@ function formatLastActivity(sec) {
   return `${Math.floor(m / 60)}h ago`
 }
 
-/** Finite amount inside a `balance` object ({currency, amount}), else null. */
-function balanceAmount(balance) {
-  if (!balance || typeof balance !== 'object') return null
-  const raw = balance.amount
-  if (typeof raw !== 'number' && typeof raw !== 'string') return null
-  if (typeof raw === 'string' && raw.trim() === '') return null
-  const amount = Number(raw)
-  return Number.isFinite(amount) ? amount : null
-}
-
-function formatBalance(balance) {
-  const amount = balanceAmount(balance)
-  if (amount === null) return 'n/a'
-  const code = String(balance.currency || '').toUpperCase()
-  const symbol = code === 'USD' ? '$' : code === 'EUR' ? '€' : code === 'CNY' ? '¥' : code ? `${code} ` : ''
-  return `${symbol}${amount.toFixed(2)}`
-}
-
-/**
- * Provider/account status is "ok" | "n/a". Anything else (a legacy payload with
- * no status field at all) counts as usable, so an older backend still renders
- * its numbers instead of collapsing to "n/a".
- */
-function statusOk(status) {
-  return status !== 'n/a'
-}
-
 function worstWorkerState(workers) {
   if (workers.some(w => w.state === 'loop')) return 'loop'
   if (workers.some(w => w.state === 'stalled')) return 'stalled'
@@ -161,7 +109,7 @@ function worstWorkerState(workers) {
  * A failed request — poll or fresh — never leaves stale numbers on screen:
  * React Query keeps the last successful `data` across a failed refetch, so the
  * failure is turned into a neutral `null` snapshot plus `error: true` and the
- * chips render their "n/a" / inactive state. Rejections stay contained here.
+ * chip renders its inactive state. Rejections stay contained here.
  */
 function useMonitor(ctx, path, intervalMs) {
   const queryClient = useQueryClient()
@@ -368,413 +316,11 @@ function WorkerChip({ ctx }) {
   })
 }
 
-// -- Quote item ---------------------------------------------------------------
-
-/**
- * Footer read-out for one window: label, mini-bar and % used on ONE row.
- * The reset hour is deliberately left to the click menu: the footer must stay
- * narrow enough for four provider groups to fit without being clipped.
- */
-function renderWindowBar(win) {
-  const hasPct = Number.isFinite(win.used_percent)
-  const pct = clampPct(win.used_percent)
-  return jsxs('span', {
-    className: 'inline-flex items-center gap-1',
-    style: { ...FOOTER_ROW, gap: '0.25rem', flex: '0 0 auto' },
-    children: [
-      jsx('span', {
-        className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-        style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-        children: win.label || '—'
-      }),
-      jsx('span', {
-        className: 'overflow-hidden rounded-sm bg-(--ui-stroke-secondary)',
-        style: {
-          position: 'relative',
-          display: 'block',
-          width: '1.75rem',
-          height: '0.5rem',
-          borderRadius: '2px',
-          flex: '0 0 auto'
-        },
-        children: hasPct
-          ? jsx('span', {
-              className: 'rounded-sm',
-              style: {
-                position: 'absolute',
-                top: 0,
-                bottom: 0,
-                left: 0,
-                width: `${pct}%`,
-                backgroundColor: quotaColor(pct)
-              }
-            })
-          : null
-      }),
-      jsx('span', {
-        className: 'tabular-nums text-[0.625rem] text-(--ui-text-secondary)',
-        style: { whiteSpace: 'nowrap', lineHeight: 1, minWidth: '1.75rem', flex: '0 0 auto' },
-        children: hasPct ? `${Math.round(pct)}%` : 'n/a'
-      })
-    ]
-  }, win.label)
-}
-
-/** Footer-only view of the ACTIVE account label, capped to the statusbar budget. */
-function footerAccountLabel(p) {
-  const label = typeof p?.account_label === 'string' ? p.account_label.trim() : ''
-  if (!label) return null
-  // Credential-pool labels can be long; the click menu always shows the full one.
-  return label.length > 18 ? `${label.slice(0, 17)}…` : label
-}
-
-function footerPoolSize(p) {
-  return Number.isFinite(p?.pool_size) ? Math.max(0, Math.floor(p.pool_size)) : 0
-}
-
-/** "n/a" read-out shared by the footer chip and the menu rows. */
-function naValue(key) {
-  return jsx('span', {
-    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-    style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-    children: 'n/a'
-  }, key)
-}
-
-/**
- * Footer view of ONE provider: name, active-account label, then the active
- * account's headline figure. No provider id is special-cased — the shape of the
- * payload decides: with `windows` the FIRST window is shown (Claude's 5h
- * session, Codex's primary window), a provider without windows but with a
- * `balance` shows the amount, an explicit "n/a" status (or nothing to show at
- * all) renders "n/a". Every window, account and reset hour stays in the menu.
- */
-function renderProviderChip(p, index) {
-  const windows = Array.isArray(p.windows) ? p.windows.filter(win => win && typeof win === 'object') : []
-  const accountLabel = footerAccountLabel(p)
-  const poolSize = footerPoolSize(p)
-  const hasBalance = balanceAmount(p.balance) !== null
-
-  let value
-  if (!statusOk(p.status)) {
-    value = naValue('value')
-  } else if (windows.length > 0) {
-    value = renderWindowBar(windows[0])
-  } else if (hasBalance) {
-    value = jsx('span', {
-      className: 'font-medium tabular-nums text-(--ui-text-secondary)',
-      style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-      children: formatBalance(p.balance)
-    }, 'value')
-  } else {
-    value = naValue('value')
-  }
-
-  // Which account Hermes is using, right next to the provider name. Kept on the
-  // same flex row as everything else: no wrap, no clipping, no extra bar.
-  const labelNodes = []
-  if (accountLabel) {
-    labelNodes.push(jsx('span', {
-      className: 'text-[0.625rem] font-medium text-(--ui-text-tertiary)',
-      style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-      children: accountLabel
-    }, 'account'))
-  }
-  if (poolSize > 1) {
-    labelNodes.push(jsx('span', {
-      className: 'tabular-nums text-[0.625rem] text-(--ui-text-quaternary)',
-      style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-      children: `×${poolSize}`
-    }, 'pool'))
-  }
-
-  return jsxs('span', {
-    className: 'inline-flex items-center',
-    style: { ...FOOTER_ROW, gap: '0.375rem', flex: '0 0 auto' },
-    children: [
-      jsx('span', {
-        className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-        style: { whiteSpace: 'nowrap', lineHeight: 1, flex: '0 0 auto' },
-        children: p.label || p.id || '—'
-      }, 'name'),
-      ...labelNodes,
-      value
-    ]
-  }, `provider-${index}`)
-}
-
-/**
- * Footer nodes: one group per provider, in payload order, separated by a middot.
- * Built from whatever the backend returns — 1, 3 or N providers, no id list.
- */
-function buildProviderChipNodes(providers) {
-  const nodes = []
-  providers.forEach((p, index) => {
-    if (index > 0) {
-      nodes.push(jsx('span', { className: 'px-0.5 text-(--ui-text-quaternary)', children: '·' }, `chip-sep-${index}`))
-    }
-    nodes.push(renderProviderChip(p, index))
-  })
-  return nodes
-}
-
-function renderWindowDetail(win, key) {
-  const hasPct = Number.isFinite(win.used_percent)
-  const pct = clampPct(win.used_percent)
-  return jsxs('div', {
-    className: 'w-full',
-    style: { ...FOOTER_ROW, display: 'flex', gap: '0.5rem', width: '100%', paddingLeft: '0.875rem' },
-    children: [
-      jsx('span', {
-        className: 'text-(--ui-text-quaternary)',
-        style: { width: '4rem', flex: '0 0 4rem' },
-        children: win.label || '—'
-      }, 'label'),
-      jsx('span', {
-        className: 'overflow-hidden rounded-sm bg-(--ui-stroke-secondary)',
-        style: { height: '0.5rem', minWidth: '5rem', flex: '1 1 auto' },
-        children: hasPct
-          ? jsx('span', {
-              className: 'block h-full rounded-sm',
-              style: { width: `${pct}%`, backgroundColor: quotaColor(pct) }
-            })
-          : null
-      }, 'bar'),
-      jsx('span', {
-        className: 'text-right tabular-nums text-(--ui-text-secondary)',
-        style: { width: '2.5rem', flex: '0 0 2.5rem' },
-        children: hasPct ? `${Math.round(pct)}%` : 'n/a'
-      }, 'pct'),
-      jsx('span', {
-        className: 'text-right text-(--ui-text-quaternary)',
-        style: { width: '4.5rem', flex: '0 0 4.5rem' },
-        children: win.reset_at != null ? `reset ${formatResetTime(win.reset_at)}` : 'n/a'
-      }, 'reset')
-    ]
-  }, key)
-}
-
-/** Menu line for a provider/account with nothing to show. */
-function naLine(key) {
-  return jsx('div', {
-    className: 'text-(--ui-text-quaternary)',
-    style: { paddingLeft: '0.875rem', lineHeight: 1.4 },
-    children: 'n/a'
-  }, key)
-}
-
-/** Menu line for a provider/account whose figure is a currency balance. */
-function balanceLine(balance, key) {
-  return jsxs('div', {
-    className: 'flex w-full items-center gap-2',
-    style: { paddingLeft: '0.875rem' },
-    children: [
-      jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Remaining balance' }, 'cap'),
-      jsx('span', {
-        className: 'ml-auto font-medium tabular-nums text-(--ui-text-secondary)',
-        children: formatBalance(balance)
-      }, 'amount')
-    ]
-  }, key)
-}
-
-/** One pool account normalized for the menu; never throws on missing fields. */
-function accountView(account, index) {
-  const a = account && typeof account === 'object' ? account : {}
-  const raw = typeof a.account_label === 'string' ? a.account_label.trim() : ''
-  const plan = typeof a.plan === 'string' ? a.plan.trim() : ''
-  return {
-    label: raw || `account ${index + 1}`,
-    plan: plan || null,
-    active: a.active === true,
-    ok: statusOk(a.status),
-    // Non-object window entries are dropped here: a malformed payload must never
-    // throw while the statusbar is rendering.
-    windows: Array.isArray(a.windows) ? a.windows.filter(win => win && typeof win === 'object') : [],
-    balance: a.balance
-  }
-}
-
-/**
- * Menu rows come from `accounts` (pool order). Without that field — old backend
- * or an empty pool — fall back to the top-level fields, i.e. the active account.
- */
-function poolAccounts(p) {
-  const accounts = Array.isArray(p?.accounts) ? p.accounts : []
-  if (accounts.length > 0) return accounts
-  return [{
-    account_label: p?.account_label,
-    plan: p?.plan,
-    active: true,
-    status: p?.status,
-    windows: p?.windows,
-    balance: p?.balance
-  }]
-}
-
-/**
- * Provider section header for the menu: display label, pool size, and — for
- * key-based providers — the NAME of the source the key was read from. Nothing
- * here is keyed on a provider id: `key_source` is rendered whenever the backend
- * sends it, and only the source name ("env", a file, a profile folder) is
- * shown, never the key itself.
- */
-function renderProviderHeader(p, index) {
-  const poolSize = footerPoolSize(p)
-  const keySource = typeof p.key_source === 'string' && p.key_source.trim() ? p.key_source.trim() : null
-  return jsxs('div', {
-    className: 'px-2 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)',
-    style: { ...FOOTER_ROW, display: 'flex', gap: '0.5rem', width: '100%' },
-    children: [
-      jsx('span', { children: p.label || p.id || '—' }, 'label'),
-      poolSize > 1 ? jsx('span', { className: 'tabular-nums', children: `${poolSize} accounts` }, 'pool') : null,
-      keySource
-        ? jsx('span', {
-            className: 'ml-auto',
-            style: { textTransform: 'none', letterSpacing: 'normal' },
-            children: `key: ${keySource}`
-          }, 'key')
-        : null
-    ]
-  }, `hdr-${index}`)
-}
-
-function renderAccountRow(raw, index, providerIndex) {
-  const account = accountView(raw, index)
-  const header = jsxs('div', {
-    style: { ...FOOTER_ROW, display: 'flex', gap: '0.375rem', width: '100%' },
-    children: [
-      jsx('span', {
-        className: account.active ? 'text-[0.625rem]' : 'text-[0.625rem] text-(--ui-text-quaternary)',
-        style: {
-          color: account.active ? GREEN : undefined,
-          width: '0.75rem',
-          flex: '0 0 0.75rem',
-          lineHeight: 1,
-          textAlign: 'center'
-        },
-        children: account.active ? '●' : '○'
-      }, 'dot'),
-      jsx('span', {
-        className: account.active ? 'font-medium text-(--ui-text-secondary)' : 'text-(--ui-text-quaternary)',
-        style: { lineHeight: 1.3, whiteSpace: 'nowrap' },
-        children: account.label
-      }, 'label'),
-      account.plan
-        ? jsx('span', {
-            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-            style: { lineHeight: 1.3, whiteSpace: 'nowrap' },
-            children: `plan ${account.plan}`
-          }, 'plan')
-        : null,
-      account.active
-        ? jsx('span', {
-            className: 'ml-auto text-[0.625rem] font-medium',
-            style: { color: GREEN, lineHeight: 1.3, whiteSpace: 'nowrap' },
-            children: 'active'
-          }, 'active')
-        : null
-    ]
-  }, 'header')
-
-  // Detail lines are chosen by what the account actually carries, never by the
-  // provider id: an unusable account renders a bare "n/a", otherwise every
-  // window is listed and a balance row is added when the payload has one.
-  const lines = []
-  if (!account.ok) {
-    lines.push(naLine('nok'))
-  } else {
-    account.windows.forEach((win, wi) => lines.push(renderWindowDetail(win, `window-${wi}`)))
-    if (balanceAmount(account.balance) !== null) lines.push(balanceLine(account.balance, 'balance'))
-    if (lines.length === 0) lines.push(naLine('empty'))
-  }
-
-  return jsx(DropdownMenuItem, {
-    onSelect: event => event.preventDefault(),
-    children: jsxs('div', {
-      className: 'flex w-full flex-col gap-1',
-      children: [header, ...lines]
-    })
-  }, `account-${providerIndex ?? 0}-${index}`)
-}
-
-/** Provider header + one row per pool account (empty pool -> active account only). */
-function renderProviderDetail(p, index) {
-  const nodes = [renderProviderHeader(p, index)]
-  poolAccounts(p).forEach((account, accountIndex) =>
-    nodes.push(renderAccountRow(account, accountIndex, index))
-  )
-  return nodes
-}
-
-/**
- * Menu nodes: one section per provider (header + one row per account), in
- * payload order, separated by a rule. Length follows the backend, not a
- * hardcoded provider list.
- */
-function buildProviderMenuNodes(providers) {
-  const nodes = []
-  providers.forEach((p, index) => {
-    if (index > 0) nodes.push(jsx(DropdownMenuSeparator, {}, `menu-sep-${index}`))
-    nodes.push(...renderProviderDetail(p, index))
-  })
-  return nodes
-}
-
-function QuoteChip({ ctx }) {
-  const { data, error, refreshFresh, close } = useMonitor(ctx, '/quotas', QUOTA_INTERVAL_MS)
-
-  const providers = (Array.isArray(data?.providers) ? data.providers : []).filter(p => p && typeof p === 'object')
-
-  const handleOpenChange = open => (open ? refreshFresh() : close())
-
-  // Both views iterate the payload as it arrives: footer groups and menu
-  // sections are built from the same provider list, in the backend's order.
-  const chipNodes = buildProviderChipNodes(providers)
-
-  const trigger = jsx(DropdownMenuTrigger, {
-    asChild: true,
-    children: jsx('button', {
-      type: 'button',
-      className: CHIP_CLASS,
-      style: { ...FOOTER_ROW, gap: '0.375rem' },
-      'aria-label': error ? 'Quotas: unavailable' : 'Plan quotas',
-      children: providers.length > 0
-        ? chipNodes
-        : jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Quotas n/a' })
-    })
-  })
-
-  const menuChildren = buildProviderMenuNodes(providers)
-  if (menuChildren.length === 0) {
-    menuChildren.push(
-      jsx('div', {
-        className: 'px-2 py-1 text-[0.625rem] text-(--ui-text-quaternary)',
-        children: error ? 'Quotas n/a — unavailable' : 'No quota data'
-      }, 'empty')
-    )
-  }
-
-  return jsxs(DropdownMenu, {
-    onOpenChange: handleOpenChange,
-    children: [
-      withTooltip(trigger, 'Plan quotas'),
-      jsx(DropdownMenuContent, {
-        align: 'end',
-        side: 'top',
-        sideOffset: 8,
-        style: { minWidth: '20rem' },
-        children: menuChildren
-      })
-    ]
-  })
-}
-
 // -- plugin contract ----------------------------------------------------------
 
 export default {
   id: ID, // must match the folder name / manifest name
-  name: 'Hermes Monitor',
+  name: 'Hermes Worker Monitor',
   // Unified-package desktop halves ship opt-in: the plugin inventories in
   // Capabilities → Plugins and stays off until the user flips the switch.
   defaultEnabled: false,
@@ -784,13 +330,6 @@ export default {
       area: STATUSBAR_AREAS.right,
       order: 140,
       render: () => jsx(WorkerChip, { ctx })
-    })
-
-    ctx.register({
-      id: 'quote',
-      area: STATUSBAR_AREAS.right,
-      order: 150,
-      render: () => jsx(QuoteChip, { ctx })
     })
   }
 }

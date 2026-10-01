@@ -1,16 +1,50 @@
-# Hermes Monitor
+# Hermes Worker Monitor
 
-Kanban worker health in the Desktop status bar.
+Kanban worker health in the Hermes Desktop status bar. Worker-only fork of [hermes-monitor](https://github.com/mr-3mm3/hermes-monitor) (MIT).
 
-Hermes Monitor adds two compact items to the right side of the Hermes Desktop footer. Worker health is the primary feature. Provider quota usage is included as a secondary readout.
+One compact item on the right side of the Desktop footer:
 
 ```text
-[Worker 2 · build · 18 s ago]  [Claude 34% 12:40 · Codex 61% 14:00 · DeepSeek $7.25]
+[Worker 2]
 ```
 
-![Footer](docs/footer.png)
+The number is colored by the worst worker state (loop > stalled > active), and the spinner runs while at least one worker is active. Open the item to see each running card: title, assignee, runtime, last activity, and a link to Kanban. The menu requests a fresh reading when it opens.
 
-Open the Worker item to see each running card, its title, assignee, runtime, last activity, and a link to Kanban. Open the Quotas item for the full Claude, Codex, and DeepSeek details. Both menus request a fresh reading when opened.
+## What this fork removes, and why
+
+Upstream ships a second footer item for provider quota usage. That item is the only reason upstream needs anything outside your own machine, so this fork drops it.
+
+Removed:
+
+- The Quotas footer item and its menu, including Claude and Codex usage windows and the DeepSeek balance.
+- The provider fan-out in the backend: every credential pool is no longer loaded, so no provider token is read.
+- The `DEEPSEEK_API_KEY` lookup from the environment, the Hermes root `.env`, and each profile `.env`.
+- The only outbound HTTP call in the repository (`https://api.deepseek.com/user/balance`).
+- The private-function clone that worked around a Hermes internal signature, so nothing here is bound to an internal API.
+- The Anthropic OAuth refresh path. Upstream calls the core credential pool `select()` when a token is near expiry, which can rewrite `auth.json`. This fork never touches it.
+
+What is left:
+
+- One route, `GET /workers`, on the local backend.
+- Read-only SQLite access to `kanban.db` and each profile's `state.db`.
+- Activity metadata only. Tool arguments are represented by a 16-character SHA-256 hash for loop detection.
+
+Counted, against upstream v0.2.2:
+
+| | Upstream | This fork |
+|---|---|---|
+| Product lines (backend + desktop) | 1,488 | 590 |
+| Backend (`dashboard/`) | 682 | 245 |
+| Desktop (`desktop/plugin.js`) | 796 | 335 |
+| Tests | 838 | 168 |
+
+
+## Trust surface
+
+- No credential is read, from any source.
+- No network call is made. Zero egress.
+- No file is written.
+- No install-time code: no `preinstall`, no `postinstall`, no setup script, and no third-party dependency. The Python half imports only the standard library and the `fastapi` that Hermes already provides.
 
 ## Requirements
 
@@ -19,73 +53,59 @@ Open the Worker item to see each running card, its title, assignee, runtime, las
 
 ## Install in Hermes
 
-[Install in Hermes](hermes://plugin/install?repo=mr-3mm3/hermes-monitor)
-
-Install the package:
-
 ```sh
-hermes plugins install mr-3mm3/hermes-monitor
+hermes plugins install djmango/hermes-worker-monitor
 ```
 
-Enable its backend for the active Hermes home. This adds `hermes-monitor` to `plugins.enabled`:
+Enable its backend for the active Hermes home:
 
 ```sh
-hermes plugins enable hermes-monitor
+hermes plugins enable hermes-worker-monitor
 ```
 
-Quit Hermes Desktop completely with Command-Q, then reopen it. In the app, open Capabilities -> Plugins and enable Hermes Monitor.
+Quit Hermes Desktop completely, then reopen it. In the app, open Capabilities -> Plugins and enable Hermes Worker Monitor. The plugin ships `defaultEnabled: false`, so it stays off until you switch it on.
 
 ### From a local checkout
 
-To run the plugin from a working copy instead of an installed release, symlink the package into the Hermes plugin directory:
+Symlink the package into the Hermes plugin directory:
 
 ```sh
-ln -s "$PWD" ~/.hermes/plugins/hermes-monitor
-hermes plugins enable hermes-monitor
+ln -s "$PWD" ~/.hermes/plugins/hermes-worker-monitor
+hermes plugins enable hermes-worker-monitor
 ```
 
-Add `hermes-monitor` to `plugins.enabled` if the enable command is unavailable, then restart the gateway (`hermes gateway restart`) so the backend routes are loaded, and quit and reopen Hermes Desktop so the footer items appear.
-
-### Official catalog publication
-
-The Hermes plugin catalog accepts owner-maintained public repositories through a pull request that adds `plugin-catalog/hermes-monitor.yaml` to `NousResearch/hermes-agent`. The entry must pin an exact 40-character commit SHA, describe the plugin's actual capabilities, and pass the catalog validation workflow. Published plugins must have a release/tag and must not update their own installed files; updates are reviewed as catalog SHA-bump pull requests.
+Add `hermes-worker-monitor` to `plugins.enabled` if the enable command is unavailable. Restart the gateway so the backend route is loaded, then quit and reopen Hermes Desktop so the footer item appears.
 
 ## Worker health states
 
-Hermes Monitor reads running Kanban cards and their local worker activity:
+The backend reads running Kanban cards and the local activity of their workers:
 
 - Active: recent worker activity.
 - Stalled: no activity for more than five minutes.
 - Loop: the same tool with the same arguments appears at least four times in a row in the latest events.
 
-Loop has priority over stalled, and stalled has priority over active when several workers are running. The footer spinner runs while at least one worker is active.
-
-## Quotas
-
-The quota item shows used percentage and reset time for the Claude five-hour and weekly windows and the windows returned by Codex. DeepSeek shows the remaining account balance. Missing credentials or provider failures are displayed as `n/a` and do not interrupt the status bar.
-
-DeepSeek credentials are resolved from the process environment, the Hermes root `.env`, then the first profile `.env` containing `DEEPSEEK_API_KEY` in alphabetical profile order.
+Loop has priority over stalled, and stalled has priority over active when several workers run.
 
 ## Privacy
 
-The backend opens the local Kanban and worker session databases in read-only mode. It returns activity metadata only. Message content and tool arguments never reach the frontend; arguments are represented by hashes for loop detection.
-
-Credentials stay in the backend and are never returned to the Desktop plugin. The only external requests are the DeepSeek balance API call and the account-usage API calls already used by Hermes for Claude and Codex. Each external call has a 15-second timeout, and quota results are cached for five minutes.
+The backend opens the local databases in read-only mode. It returns activity metadata only. Message content and tool arguments never reach the frontend, and arguments are represented by hashes.
 
 ## Development
 
-Requirements: Python 3.11+ with `pytest`, and Node.js for the syntax check. The backend tests are pure logic with fixtures and never make real network calls.
+Requirements: Python 3.11+ with `pytest`, and Node.js for the syntax check. The tests are pure logic with fixtures and make no real network calls.
 
 ```sh
-python3 -m pytest tests/ -q
+PYTHONPATH=. python3 -m pytest tests/ -q
 node --check desktop/plugin.js
 ```
 
-The backend lives in `dashboard/` (`plugin_api.py` wires the routes, `workers.py` and `quotas.py` hold the pure transformations) and the Desktop half is the single module `desktop/plugin.js`.
+The backend lives in `dashboard/` (`plugin_api.py` wires the route and `workers.py` holds the pure transformations) and the Desktop half is the single module `desktop/plugin.js`.
 
-## Related
+## Upstream and attribution
 
-If you mainly need provider quota tracking, see `ai-usage-tracker` in the Hermes plugin catalog. Hermes Monitor focuses on Kanban worker health and includes quotas as a secondary feature.
+The original plugin, its design, and the worker-state logic are the work of [mr-3mm3](https://github.com/mr-3mm3). This fork changes packaging, naming, and scope only, and keeps the MIT license and the upstream copyright notice.
+
+If you want provider quota tracking as well, install upstream `hermes-monitor`, or `ai-usage-tracker` for quotas alone.
 
 ## License
 
