@@ -1,4 +1,9 @@
-"""Pure worker-state transformations for Hermes Monitor."""
+"""Pure board-summary transformations for Hermes Worker Monitor.
+
+Two jobs, both pure: read a worker's health out of its recent tool calls, and
+fold raw Kanban status counts into the handful of groups the footer shows.
+Nothing here touches a database, a credential, or the network.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,20 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any
+
+# A worker with no tool call for this long is stalled.
+STALL_AFTER_S = 300
+
+# The same tool with the same arguments this many times in a row is a loop.
+LOOP_MINIMUM = 4
+
+# Cards that have not started: the dispatcher can pick these up.
+QUEUED_STATUSES = ("todo", "ready", "triage")
+
+# Blocked on another card. The rest of the blocked column needs a person.
+DEPENDENCY_KINDS = ("dependency",)
+
+BOARD_PATH = "/kanban"
 
 
 def hash_arguments(arguments: Any) -> str:
@@ -19,7 +38,7 @@ def hash_arguments(arguments: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def is_repeated_tool_loop(events: Iterable[Mapping[str, Any]], minimum: int = 4) -> bool:
+def is_repeated_tool_loop(events: Iterable[Mapping[str, Any]], minimum: int = LOOP_MINIMUM) -> bool:
     """Detect an identical run at the tail of the recent call sequence."""
     recent = list(events)
     if len(recent) < minimum:
@@ -39,36 +58,86 @@ def is_repeated_tool_loop(events: Iterable[Mapping[str, Any]], minimum: int = 4)
     return run_length >= minimum
 
 
-def build_workers_response(
+def card_state(events: Iterable[Mapping[str, Any]], *, now: int) -> str:
+    """One card's health: loop beats stalled, stalled beats active.
+
+    A card with no activity signal at all reads as active. A running card whose
+    events cannot be read is a gap in the data, not a fault in the worker, and
+    the footer must not cry wolf for it.
+    """
+    ordered = sorted(events, key=lambda event: float(event.get("timestamp") or 0))
+    if is_repeated_tool_loop(ordered):
+        return "loop"
+    if not ordered:
+        return "active"
+    last = float(ordered[-1].get("timestamp") or 0)
+    return "stalled" if now - last > STALL_AFTER_S else "active"
+
+
+def summarize_workers(
     tasks: Iterable[Mapping[str, Any]],
     activity_by_card: Mapping[str, Iterable[Mapping[str, Any]]],
     *,
     now: int,
 ) -> dict[str, Any]:
-    """Build the public workers payload without exposing event contents."""
-    workers: list[dict[str, Any]] = []
+    """Count running cards by health, without exposing any card or its work."""
+    counts = {"active": 0, "stalled": 0, "looping": 0}
+    total = 0
     for task in tasks:
         card_id = str(task["id"])
-        started_at = int(task.get("started_at") or now)
-        events = sorted(activity_by_card.get(card_id, ()), key=lambda event: float(event.get("timestamp") or 0))
-        last_timestamp = float(events[-1].get("timestamp") or 0) if events else None
-        last_activity_s = max(0, int(now - last_timestamp)) if last_timestamp is not None else None
-        if is_repeated_tool_loop(events):
-            state = "loop"
-        elif last_activity_s is not None and last_activity_s > 300:
-            state = "stalled"
-        else:
-            state = "active"
-        workers.append(
-            {
-                "card_id": card_id,
-                "title": str(task.get("title") or ""),
-                "assignee": str(task.get("assignee") or ""),
-                "running_since": started_at,
-                "duration_s": max(0, now - started_at),
-                "last_activity_s": last_activity_s,
-                "state": state,
-                "kanban_url": task.get("kanban_url") if isinstance(task.get("kanban_url"), str) else None,
-            }
-        )
-    return {"generated_at": int(now), "count": len(workers), "workers": workers}
+        total += 1
+        state = card_state(activity_by_card.get(card_id, ()), now=now)
+        counts["looping" if state == "loop" else state] += 1
+    # Worst state first: the strip colors itself from this.
+    if counts["looping"]:
+        worst = "loop"
+    elif counts["stalled"]:
+        worst = "stalled"
+    else:
+        worst = "active"
+    return {"total": total, "active": counts["active"], "stalled": counts["stalled"],
+            "looping": counts["looping"], "state": worst}
+
+
+def normalize_groups(
+    status_counts: Mapping[str, Any],
+    blocked_kinds: Mapping[str, Any] | None = None,
+    *,
+    done_today: int = 0,
+) -> dict[str, int]:
+    """Fold raw Kanban status counts into the footer groups.
+
+    ``blocked`` holds the cards that need a person. ``waiting`` holds the cards
+    blocked on another card, which the board clears on its own.
+    """
+    def count(*statuses: str) -> int:
+        return sum(int(status_counts.get(status) or 0) for status in statuses)
+
+    kinds = blocked_kinds or {}
+    waiting = sum(int(kinds.get(kind) or 0) for kind in DEPENDENCY_KINDS)
+    blocked_total = count("blocked")
+    return {
+        "blocked": max(0, blocked_total - waiting),
+        "waiting": waiting,
+        "running": count("running"),
+        "queued": count(*QUEUED_STATUSES),
+        "scheduled": count("scheduled"),
+        "review": count("review"),
+        "done_today": max(0, int(done_today)),
+    }
+
+
+def build_summary_response(
+    tasks: Iterable[Mapping[str, Any]],
+    activity_by_card: Mapping[str, Iterable[Mapping[str, Any]]],
+    groups: Mapping[str, Any],
+    *,
+    now: int,
+) -> dict[str, Any]:
+    """The one payload the desktop half reads."""
+    return {
+        "generated_at": int(now),
+        "board": {"path": BOARD_PATH},
+        "groups": {key: int(value) for key, value in groups.items()},
+        "workers": summarize_workers(tasks, activity_by_card, now=now),
+    }

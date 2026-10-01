@@ -1,14 +1,18 @@
 # Hermes Worker Monitor
 
-Kanban worker health in the Hermes Desktop status bar. Worker-only fork of [hermes-monitor](https://github.com/mr-3mm3/hermes-monitor) (MIT).
+Kanban board groups and worker health in the Hermes Desktop footer. Worker-only fork of [hermes-monitor](https://github.com/mr-3mm3/hermes-monitor) (MIT).
 
-One compact item on the right side of the Desktop footer:
+One compact strip on the right side of the Desktop footer:
 
 ```text
-[Worker 2]
+[1 blocked]  [10 running]  21 queued   2 scheduled   26 done today
 ```
 
-The number is colored by the worst worker state (loop > stalled > active), and the spinner runs while at least one worker is active. Open the item to see each running card: title, assignee, runtime, last activity, and a link to Kanban. The menu requests a fresh reading when it opens.
+- Cards that stopped and need a person come first, in red.
+- The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.
+- Hover any count for the breakdown, for example `10 running: 8 active, 2 stalled. Click for the board`.
+- Click any count to open the Kanban board page inside the app. There is no menu to open and no second screen to read.
+- A group with no cards is left out, so the strip stays short. A quiet board shows the queue, or `idle`.
 
 ## What this fork removes, and why
 
@@ -25,19 +29,19 @@ Removed:
 
 What is left:
 
-- One route, `GET /workers`, on the local backend.
-- Read-only SQLite access to `kanban.db` and each profile's `state.db`.
-- Activity metadata only. Tool arguments are represented by a 16-character SHA-256 hash for loop detection.
+- One route, `GET /summary`, on the local backend.
+- Read-only SQLite access to `kanban.db`, plus each profile's `state.db` for worker activity.
+- Counts only. The payload carries group counts and the count of active, stalled, and looping workers. No card identifier, title, assignee, or tool argument leaves the backend.
+- Worker activity metadata inside the backend: tool name, a 16-character SHA-256 hash of the arguments, and a timestamp, used for stall and loop detection.
 
 Counted, against upstream v0.2.2:
 
 | | Upstream | This fork |
 |---|---|---|
-| Product lines (backend + desktop) | 1,488 | 590 |
-| Backend (`dashboard/`) | 682 | 245 |
-| Desktop (`desktop/plugin.js`) | 796 | 335 |
-| Tests | 838 | 168 |
-
+| Product lines (backend + desktop) | 1,488 | 742 |
+| Backend (`dashboard/`) | 682 | 386 |
+| Desktop (`desktop/plugin.js`) | 796 | 356 |
+| Tests | 838 | 359 |
 
 ## Trust surface
 
@@ -84,13 +88,13 @@ The backend reads running Kanban cards and the local activity of their workers:
 - Stalled: no activity for more than five minutes.
 - Loop: the same tool with the same arguments appears at least four times in a row in the latest events.
 
-Loop has priority over stalled, and stalled has priority over active when several workers run.
+Loop has priority over stalled, and stalled has priority over active when several workers run. The footer dot takes the worst of the three, and the tooltip prints the split.
 
 Activity comes from the worker's own session store. A named profile keeps its sessions in `profiles/<name>/state.db`, and the default profile keeps them in the root `state.db`, so the reader tries the named store first and then the root store for a default-profile card. Both are opened read-only.
 
 ## Privacy
 
-The backend opens the local databases in read-only mode. It returns activity metadata only. Message content and tool arguments never reach the frontend, and arguments are represented by hashes.
+The backend opens the local databases in read-only mode and returns counts only. Message content, card titles, assignees, and tool arguments never leave the backend, and arguments are represented by hashes for the stall and loop test.
 
 ## Development
 

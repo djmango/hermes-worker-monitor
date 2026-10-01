@@ -9,14 +9,43 @@ from unittest.mock import patch
 
 from dashboard import plugin_api
 
-
 NOW = 1_700_000_000
 CANARY = "canary-value-must-not-appear"
 
+TASKS_SCHEMA = """
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  status TEXT,
+  assignee TEXT,
+  started_at INTEGER,
+  completed_at INTEGER,
+  block_kind TEXT
+)
+"""
 
-def test_routes_are_relative_and_registered():
+
+def _board(path: Path, rows, *, old_schema=False) -> None:
+    """Write a stand-in kanban.db. ``old_schema`` drops the two later columns."""
+    with sqlite3.connect(path) as connection:
+        if old_schema:
+            connection.execute(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT, assignee TEXT, started_at INTEGER)"
+            )
+        else:
+            connection.executescript(TASKS_SCHEMA)
+        connection.executemany(
+            "INSERT INTO tasks (id, title, status, assignee, started_at) VALUES (?, ?, ?, ?, ?)"
+            if old_schema else
+            "INSERT INTO tasks (id, title, status, assignee, started_at, completed_at, block_kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [tuple(row) for row in rows] if old_schema else [tuple(row) + (None,) * (7 - len(row)) for row in rows],
+        )
+
+
+def test_route_is_relative_and_registered():
     paths = {route.path for route in plugin_api.router.routes}
-    assert paths == {"/workers"}
+    assert paths == {"/summary"}
 
 
 def test_sqlite_connections_are_enforced_read_only():
@@ -33,20 +62,27 @@ def test_sqlite_connections_are_enforced_read_only():
                 raise AssertionError("read-only connection unexpectedly accepted a write")
 
 
-def test_workers_endpoint_exact_shape_and_fresh_bypasses_cache():
+def test_summary_endpoint_exact_shape_and_fresh_bypasses_cache():
     calls = []
+    payload = {
+        "generated_at": NOW,
+        "board": {"path": "/kanban"},
+        "groups": {"blocked": 1, "waiting": 0, "running": 2, "queued": 3,
+                   "scheduled": 0, "review": 0, "done_today": 4},
+        "workers": {"total": 2, "active": 2, "stalled": 0, "looping": 0, "state": "active"},
+    }
 
     def fake_build():
         calls.append(1)
-        return {"generated_at": NOW, "count": 0, "workers": []}
+        return payload
 
-    with patch.object(plugin_api, "_build_workers_payload", fake_build):
-        plugin_api._workers_cache.clear()
-        first = asyncio.run(plugin_api.get_workers(fresh=0))
-        cached = asyncio.run(plugin_api.get_workers(fresh=0))
-        refreshed = asyncio.run(plugin_api.get_workers(fresh=1))
+    with patch.object(plugin_api, "_build_summary_payload", fake_build):
+        plugin_api._summary_cache.clear()
+        first = asyncio.run(plugin_api.get_summary(fresh=0))
+        cached = asyncio.run(plugin_api.get_summary(fresh=0))
+        refreshed = asyncio.run(plugin_api.get_summary(fresh=1))
 
-    assert first == cached == refreshed == {"generated_at": NOW, "count": 0, "workers": []}
+    assert first == cached == refreshed == payload
     assert len(calls) == 2
 
 
@@ -99,6 +135,67 @@ def test_named_profile_prefers_its_own_store_over_the_root_one():
     ]
 
 
+def test_group_queries_read_the_live_board_shape():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        day = plugin_api._local_day_start()
+        _board(root / "kanban.db", [
+            ("t_run", "Run", "running", "default", NOW),
+            ("t_todo", "Todo", "todo", "default", NOW),
+            ("t_ready", "Ready", "ready", "default", NOW),
+            ("t_blocked", "Blocked", "blocked", "default", NOW, None, "capability"),
+            ("t_waiting", "Waiting", "blocked", "default", NOW, None, "dependency"),
+            ("t_done_today", "Done", "done", "default", NOW, day + 1, None),
+            ("t_done_older", "Older", "done", "default", NOW, day - 1, None),
+        ])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            counts = plugin_api._load_status_counts()
+            kinds = plugin_api._load_blocked_kinds()
+            done_today = plugin_api._load_done_today()
+
+    assert counts == {"running": 1, "todo": 1, "ready": 1, "blocked": 2, "done": 2}
+    assert kinds == {"capability": 1, "dependency": 1}
+    assert done_today == 1
+    assert plugin_api.normalize_groups(counts, kinds, done_today=done_today) == {
+        "blocked": 1, "waiting": 1, "running": 1, "queued": 2,
+        "scheduled": 0, "review": 0, "done_today": 1,
+    }
+
+
+def test_older_board_without_the_later_columns_still_reports():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [("t_run", "Run", "running", "default", NOW)], old_schema=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            kinds = plugin_api._load_blocked_kinds()
+            done_today = plugin_api._load_done_today()
+            counts = plugin_api._load_status_counts()
+
+    assert kinds == {}
+    assert done_today == 0
+    assert counts == {"running": 1}
+
+
+def test_build_payload_combines_groups_and_worker_states():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [
+            ("t_run", "Run", "running", "default", NOW),
+            ("t_blocked", "Blocked", "blocked", "default", NOW, None, "needs_input"),
+        ])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True), \
+                patch.object(plugin_api, "_load_tool_events", lambda task: []):
+            payload = plugin_api._build_summary_payload()
+
+    assert payload["groups"] == {"blocked": 1, "waiting": 0, "running": 1, "queued": 0,
+                                 "scheduled": 0, "review": 0, "done_today": 0}
+    assert payload["workers"] == {"total": 1, "active": 1, "stalled": 0, "looping": 0, "state": "active"}
+    assert payload["board"] == {"path": "/kanban"}
+
+
 def test_module_reads_no_credentials_and_makes_no_network_calls():
     """The fork's whole point: the module surface must stay credential-free."""
     source = Path(plugin_api.__file__).read_text(encoding="utf-8")
@@ -114,6 +211,24 @@ def test_module_reads_no_credentials_and_makes_no_network_calls():
         "socket",
     ):
         assert forbidden not in source, f"unexpected reference to {forbidden!r} in plugin_api.py"
+
+
+def test_no_em_dashes_in_shipped_sources():
+    """House rule for this fork: no em dashes in code, docs, or UI copy."""
+    root = Path(__file__).resolve().parent.parent
+    shipped = [
+        root / "plugin.yaml",
+        root / "README.md",
+        root / "CHANGELOG.md",
+        root / "dashboard" / "plugin_api.py",
+        root / "dashboard" / "workers.py",
+        root / "dashboard" / "manifest.json",
+        root / "desktop" / "plugin.js",
+        root / "tests" / "test_plugin_api.py",
+        root / "tests" / "test_workers.py",
+    ]
+    for path in shipped:
+        assert "\u2014" not in path.read_text(encoding="utf-8"), f"em dash found in {path.name}"
 
 
 def load_tests(loader, tests, pattern):

@@ -1,7 +1,7 @@
 name: hermes-worker-monitor
 label: Hermes Worker Monitor
-version: 0.1.1
-description: Kanban worker health (live activity, stall and loop detection) in the Hermes Desktop status bar. Worker-only fork of hermes-monitor; no credentials and no network.
+version: 0.2.0
+description: Kanban board groups and worker health in the Hermes Desktop footer. Blocked cards first, live running state, hover for the breakdown, one click to the board. Worker-only fork of hermes-monitor; no credentials and no network.
 author: djmango (fork of hermes-monitor by mr-3mm3, MIT)
 manifest_version: 2
 license: MIT

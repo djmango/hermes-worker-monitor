@@ -1,7 +1,7 @@
 {
   "name": "hermes-worker-monitor",
   "label": "Hermes Worker Monitor",
-  "description": "Kanban worker health for Hermes Desktop: live activity, stall and loop detection.",
-  "version": "0.1.1",
+  "description": "Kanban board groups and worker health for Hermes Desktop: blocked first, live running state, one click to the board.",
+  "version": "0.2.0",
   "api": "plugin_api.py"
 }

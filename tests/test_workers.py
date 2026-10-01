@@ -1,7 +1,14 @@
 import json
 import unittest
 
-from dashboard.workers import build_workers_response, hash_arguments, is_repeated_tool_loop
+from dashboard.workers import (
+    build_summary_response,
+    card_state,
+    hash_arguments,
+    is_repeated_tool_loop,
+    normalize_groups,
+    summarize_workers,
+)
 
 
 NOW = 1_700_000_000
@@ -34,44 +41,75 @@ def test_completed_historical_run_does_not_keep_worker_in_loop():
     assert not is_repeated_tool_loop(events)
 
 
-def test_worker_shape_loop_priority_and_stall_threshold():
-    tasks = [
-        {"id": "t_loop", "title": "Loop", "assignee": "a", "started_at": NOW - 60},
-        {"id": "t_edge", "title": "Edge", "assignee": "b", "started_at": NOW - 400},
-        {"id": "t_stall", "title": "Stall", "assignee": "c", "started_at": NOW - 600},
-    ]
+def test_card_state_loop_beats_stalled_and_stall_threshold_is_a_boundary():
     repeated = [event("terminal", {"command": "safe"}, NOW - i) for i in range(4, 0, -1)]
-    activities = {
+    assert card_state(repeated, now=NOW) == "loop"
+    # A stale loop is still a loop: the worker is stuck on the same call.
+    assert card_state(repeated, now=NOW + 3600) == "loop"
+    assert card_state([event("terminal", {}, NOW - 300)], now=NOW) == "active"
+    assert card_state([event("terminal", {}, NOW - 301)], now=NOW) == "stalled"
+    # No activity signal at all is a gap in the data, not a fault.
+    assert card_state([], now=NOW) == "active"
+
+
+def test_summary_counts_workers_by_state_and_reports_the_worst():
+    tasks = [{"id": "t_loop"}, {"id": "t_edge"}, {"id": "t_stall"}, {"id": "t_quiet"}]
+    repeated = [event("terminal", {"command": "safe"}, NOW - i) for i in range(4, 0, -1)]
+    activity = {
         "t_loop": repeated,
         "t_edge": [event("terminal", {}, NOW - 300)],
         "t_stall": [event("terminal", {}, NOW - 301)],
     }
 
-    result = build_workers_response(tasks, activities, now=NOW)
+    result = summarize_workers(tasks, activity, now=NOW)
 
-    assert result == {
-        "generated_at": NOW,
-        "count": 3,
-        "workers": [
-            {"card_id": "t_loop", "title": "Loop", "assignee": "a", "running_since": NOW - 60,
-             "duration_s": 60, "last_activity_s": 1, "state": "loop", "kanban_url": None},
-            {"card_id": "t_edge", "title": "Edge", "assignee": "b", "running_since": NOW - 400,
-             "duration_s": 400, "last_activity_s": 300, "state": "active", "kanban_url": None},
-            {"card_id": "t_stall", "title": "Stall", "assignee": "c", "running_since": NOW - 600,
-             "duration_s": 600, "last_activity_s": 301, "state": "stalled", "kanban_url": None},
-        ],
-    }
+    assert result == {"total": 4, "active": 2, "stalled": 1, "looping": 1, "state": "loop"}
     assert "safe" not in json.dumps(result)
 
 
-def test_unknown_activity_is_active_with_null_age():
-    result = build_workers_response(
-        [{"id": "t_x", "title": "Unknown", "assignee": "a", "started_at": NOW}],
-        {},
-        now=NOW,
+def test_summary_state_falls_back_to_stalled_then_active():
+    tasks = [{"id": "a"}, {"id": "b"}]
+    activity = {"a": [event("terminal", {}, NOW - 301)], "b": [event("terminal", {}, NOW)]}
+    assert summarize_workers(tasks, activity, now=NOW)["state"] == "stalled"
+    assert summarize_workers([], {}, now=NOW) == {
+        "total": 0, "active": 0, "stalled": 0, "looping": 0, "state": "active"
+    }
+
+
+def test_groups_map_board_statuses_to_footer_counts():
+    counts = {"triage": 2, "todo": 15, "ready": 4, "running": 10, "scheduled": 2,
+              "review": 1, "blocked": 3, "done": 299, "archived": 8}
+    kinds = {"capability": 1, "dependency": 2}
+
+    groups = normalize_groups(counts, kinds, done_today=26)
+
+    assert groups == {
+        "blocked": 1, "waiting": 2, "running": 10, "queued": 21,
+        "scheduled": 2, "review": 1, "done_today": 26,
+    }
+
+
+def test_groups_ignore_unknown_statuses_and_missing_kinds():
+    groups = normalize_groups({"running": 3, "something-new": 9}, None, done_today=-5)
+    assert groups == {
+        "blocked": 0, "waiting": 0, "running": 3, "queued": 0,
+        "scheduled": 0, "review": 0, "done_today": 0,
+    }
+
+
+def test_response_shape_is_counts_only():
+    groups = normalize_groups({"running": 1, "blocked": 1}, {"capability": 1}, done_today=2)
+    result = build_summary_response(
+        [{"id": "t_1", "assignee": "default"}], {"t_1": [event("terminal", {}, NOW)]}, groups, now=NOW
     )
-    assert result["workers"][0]["last_activity_s"] is None
-    assert result["workers"][0]["state"] == "active"
+
+    assert set(result) == {"generated_at", "board", "groups", "workers"}
+    assert result["board"] == {"path": "/kanban"}
+    assert result["generated_at"] == NOW
+    assert set(result["workers"]) == {"total", "active", "stalled", "looping", "state"}
+    # No card identifier, title, or assignee reaches the desktop half.
+    assert "t_1" not in json.dumps(result)
+    assert "default" not in json.dumps(result)
 
 
 def load_tests(loader, tests, pattern):
