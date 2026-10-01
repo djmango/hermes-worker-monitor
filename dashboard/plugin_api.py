@@ -38,6 +38,10 @@ except ImportError:  # Loaded by file path by the Hermes plugin loader: no packa
 router = APIRouter()
 CACHE_TTL_S = 300
 
+# Assignee values that mean "the default profile", whose sessions live in the
+# root store rather than under ``profiles/``.
+_DEFAULT_PROFILE_NAMES = {"", "default"}
+
 
 class TTLCache:
     def __init__(self, ttl: int = CACHE_TTL_S) -> None:
@@ -89,12 +93,27 @@ def _load_running_tasks() -> list[dict[str, Any]]:
     return [{"id": row[0], "title": row[1], "assignee": row[2], "started_at": row[3], "kanban_url": None} for row in rows]
 
 
-def _safe_profile_database(assignee: str) -> Path | None:
+def _profile_databases(assignee: str) -> list[Path]:
+    """Candidate read-only stores for *assignee*, most specific first.
+
+    A named profile keeps its sessions in ``profiles/<name>/state.db``. The
+    default profile has no profile directory at all: its sessions live in the
+    root ``<hermes home>/state.db``. Reading only the named path would leave
+    every card of the default profile with no activity signal.
+    """
     if not assignee or assignee in {".", ".."} or Path(assignee).name != assignee:
-        return None
-    profiles = (_hermes_home() / "profiles").resolve()
-    candidate = (profiles / assignee / "state.db").resolve()
-    return candidate if candidate.is_relative_to(profiles) and candidate.is_file() else None
+        return []
+    root = _hermes_home()
+    candidates: list[Path] = []
+    profiles = (root / "profiles").resolve()
+    named = (profiles / assignee / "state.db").resolve()
+    if named.is_relative_to(profiles) and named.is_file():
+        candidates.append(named)
+    if assignee in _DEFAULT_PROFILE_NAMES:
+        root_database = (root / "state.db").resolve()
+        if root_database.is_relative_to(root.resolve()) and root_database.is_file():
+            candidates.append(root_database)
+    return candidates
 
 
 def _extract_calls(tool_calls: Any, timestamp: float) -> list[dict[str, Any]]:
@@ -117,10 +136,7 @@ def _extract_calls(tool_calls: Any, timestamp: float) -> list[dict[str, Any]]:
     return events
 
 
-def _load_tool_events(task: dict[str, Any]) -> list[dict[str, Any]]:
-    database = _safe_profile_database(str(task.get("assignee") or ""))
-    if database is None:
-        return []
+def _events_from(database: Path, task: dict[str, Any]) -> list[dict[str, Any]]:
     started = float(task.get("started_at") or 0)
     with closing(_readonly_connection(database)) as connection:
         session = connection.execute(
@@ -138,6 +154,14 @@ def _load_tool_events(task: dict[str, Any]) -> list[dict[str, Any]]:
     for tool_calls, timestamp in reversed(rows):
         events.extend(_extract_calls(tool_calls, float(timestamp)))
     return events
+
+
+def _load_tool_events(task: dict[str, Any]) -> list[dict[str, Any]]:
+    for database in _profile_databases(str(task.get("assignee") or "")):
+        events = _events_from(database, task)
+        if events:
+            return events
+    return []
 
 
 def _build_workers_payload() -> dict[str, Any]:

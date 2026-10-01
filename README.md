@@ -86,6 +86,8 @@ The backend reads running Kanban cards and the local activity of their workers:
 
 Loop has priority over stalled, and stalled has priority over active when several workers run.
 
+Activity comes from the worker's own session store. A named profile keeps its sessions in `profiles/<name>/state.db`, and the default profile keeps them in the root `state.db`, so the reader tries the named store first and then the root store for a default-profile card. Both are opened read-only.
+
 ## Privacy
 
 The backend opens the local databases in read-only mode. It returns activity metadata only. Message content and tool arguments never reach the frontend, and arguments are represented by hashes.

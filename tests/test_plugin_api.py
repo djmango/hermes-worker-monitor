@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -59,6 +60,43 @@ def test_worker_tool_events_expose_only_name_hash_and_timestamp():
     assert events[0]["tool_name"] == "terminal"
     assert len(events[0]["arguments_hash"]) == 16
     assert CANARY not in json.dumps(events)
+
+
+def test_default_profile_reads_the_root_state_db_and_named_profile_does_not():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "state.db").write_bytes(b"")
+        (root / "profiles" / "alpha").mkdir(parents=True)
+        (root / "profiles" / "alpha" / "state.db").write_bytes(b"")
+        (root / "profiles" / "nodb").mkdir(parents=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            default_paths = plugin_api._profile_databases("default")
+            named_paths = plugin_api._profile_databases("alpha")
+            missing_paths = plugin_api._profile_databases("nodb")
+            unsafe_paths = plugin_api._profile_databases("../evil")
+
+    assert default_paths == [root.resolve() / "state.db"]
+    assert named_paths == [root.resolve() / "profiles" / "alpha" / "state.db"]
+    # A named profile never falls back to another profile's store.
+    assert missing_paths == []
+    assert unsafe_paths == []
+
+
+def test_named_profile_prefers_its_own_store_over_the_root_one():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "state.db").write_bytes(b"")
+        (root / "profiles" / "default").mkdir(parents=True)
+        (root / "profiles" / "default" / "state.db").write_bytes(b"")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            paths = plugin_api._profile_databases("default")
+
+    assert paths == [
+        root.resolve() / "profiles" / "default" / "state.db",
+        root.resolve() / "state.db",
+    ]
 
 
 def test_module_reads_no_credentials_and_makes_no_network_calls():
