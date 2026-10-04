@@ -67,7 +67,7 @@ Enable its backend for the active Hermes home:
 hermes plugins enable hermes-worker-monitor
 ```
 
-Quit Hermes Desktop completely, then reopen it. In the app, open Capabilities -> Plugins and enable Hermes Worker Monitor. The plugin ships `defaultEnabled: false`, so it stays off until you switch it on.
+Quit Hermes Desktop completely, then reopen it. The footer strip appears on its own: the desktop half ships `defaultEnabled: true`, so there is no switch to flip. To hide it, open Capabilities -> Plugins and switch Hermes Worker Monitor off. Turning it back on restores it.
 
 ### From a local checkout
 

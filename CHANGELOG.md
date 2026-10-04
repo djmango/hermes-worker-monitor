@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- The desktop half is on by default (`defaultEnabled: true`). The strip is the point of the plugin and it reads counts only, so it no longer needs a switch flip before it appears. It can still be turned off in Capabilities, Plugins.
+- README install steps updated: reopen the app and the strip is there.
+
 ## 0.2.0
 
 - The footer item now shows the board instead of a running-card count. One strip with `blocked`, `waiting`, `running`, `queued`, `scheduled`, `review`, and `done today`; a group with no cards is left out.

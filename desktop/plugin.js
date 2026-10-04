@@ -342,9 +342,10 @@ function WorkerStrip({ ctx }) {
 export default {
   id: ID, // must match the folder name / manifest name
   name: 'Hermes Worker Monitor',
-  // Unified-package desktop halves ship opt-in: the plugin inventories in
-  // Capabilities, Plugins and stays off until the user flips the switch.
-  defaultEnabled: false,
+  // On by default: the strip is the point of this plugin and it reads counts
+  // only, so it should not need a switch flip to appear. The user can still
+  // turn it off in Capabilities, Plugins.
+  defaultEnabled: true,
   register(ctx) {
     ctx.register({
       id: 'summary',
