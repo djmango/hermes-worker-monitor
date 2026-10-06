@@ -217,18 +217,23 @@ def test_module_reads_no_credentials_and_makes_no_network_calls():
 
 
 def test_only_one_count_popover_can_be_open():
-    """One shared open slot, not per-chip state.
+    """One shared open slot, and the chip under the pointer always wins it.
 
     Each chip used to own its open flag, so hovering across the footer left a
-    row of panels open. The slot is shared now, and a chip must not carry its
-    own flag back in.
+    row of panels up. Then the panel took the slot back whenever the pointer
+    crossed it, so the group the pointer had already left stayed on screen.
+    The slot is shared, the strip decides it from the pointer, and a panel only
+    holds its own.
     """
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
     assert "const $openSlot = atom(" in source
-    assert "useValue($openSlot)" in source
+    assert "useValue($openSlot) === slot" in source
     assert "useState" not in source
+    assert "data-hwm-slot" in source
+    assert "onPointerMove: event => {" in source
+    assert "onPointerEnter: cancelClose" in source
     assert source.count("slot: '") == source.count("jsx(CountWithCards, {")
 
 

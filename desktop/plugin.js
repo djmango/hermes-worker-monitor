@@ -60,18 +60,22 @@ const CARD_LIMIT = 25
 // period, the gap between the chip and the panel closes it on the way in.
 const HOVER_CLOSE_MS = 140
 
-// ONE popover at a time. Every chip reports into this shared slot, so opening
-// one closes the one before it instead of leaving a row of panels open across
-// the footer. The timer lives here too: a per-chip timer could still fire after
-// another chip took the slot.
+// ONE popover at a time. Every chip reports into this shared slot, so taking it
+// closes the one before it instead of leaving a row of panels open across the
+// footer. A panel only ever HOLDS its own slot, it never takes one back, so
+// moving out of an open panel onto another chip always switches the panel.
 const $openSlot = atom(null)
 let closeTimer = null
+let closeToken = 0
 
 function cancelClose() {
   if (closeTimer !== null) {
     clearTimeout(closeTimer)
     closeTimer = null
   }
+  // Invalidates any timer still in flight, so a stale one cannot close a panel
+  // that another chip just opened.
+  closeToken += 1
 }
 
 /** Take the slot for `slot`, closing whatever was open. */
@@ -80,12 +84,13 @@ function openSlot(slot) {
   if ($openSlot.get() !== slot) $openSlot.set(slot)
 }
 
-/** Release `slot` after the grace period, so the pointer can reach the panel. */
-function closeSlotSoon(slot) {
+/** Release the slot after the grace period, so the pointer can reach the panel. */
+function closeSlotSoon() {
   cancelClose()
+  const token = closeToken
   closeTimer = setTimeout(() => {
     closeTimer = null
-    if ($openSlot.get() === slot) $openSlot.set(null)
+    if (token === closeToken) $openSlot.set(null)
   }, HOVER_CLOSE_MS)
 }
 
@@ -98,6 +103,16 @@ function closeSlot(slot) {
 function closeAnySlot() {
   cancelClose()
   if ($openSlot.get() !== null) $openSlot.set(null)
+}
+
+/**
+ * The chip the pointer is over, from the pointer event itself. The strip owns
+ * this decision, so the panel under the pointer cannot win it by being under
+ * the pointer.
+ */
+function slotUnder(event) {
+  const chip = event.target?.closest?.('[data-hwm-slot]')
+  return chip ? chip.getAttribute('data-hwm-slot') : null
 }
 
 // Traffic-light colors for the running state. Mid-saturation hues that stay
@@ -332,7 +347,7 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel,
   const { cards, error, loading, total } = useCards(ctx, group, open)
 
   const show = () => openSlot(slot)
-  const hide = () => closeSlotSoon(slot)
+  const hide = closeSlotSoon
 
   const openBoard = () => {
     closeSlot(slot)
@@ -352,6 +367,7 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel,
   const trigger = jsx('button', {
     'aria-label': `${label ?? group}: ${plural(count, 'card')}`,
     className: ITEM_CLASS,
+    'data-hwm-slot': slot,
     onBlur: hide,
     onClick: openBoard,
     onFocus: show,
@@ -366,7 +382,9 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel,
     align: 'end',
     // A hover panel must never take focus away from the composer.
     onOpenAutoFocus: event => event.preventDefault(),
-    onPointerEnter: show,
+    // HOLD, never take: the panel keeps itself open while the pointer is on it,
+    // but it cannot pull the slot back from the chip the pointer just moved to.
+    onPointerEnter: cancelClose,
     onPointerLeave: hide,
     side: 'top',
     sideOffset: 8,
@@ -565,7 +583,18 @@ function WorkerStrip({ ctx }) {
     )
   }
 
-  return jsx('span', { style: STRIP_STYLE, children: items })
+  // The strip decides which chip is hovered, from the pointer event. A chip
+  // handler alone loses the race whenever a panel sits over a neighbouring
+  // chip: the pointer never reaches that chip, so the old panel stays up.
+  return jsx('span', {
+    onPointerLeave: closeSlotSoon,
+    onPointerMove: event => {
+      const slot = slotUnder(event)
+      if (slot) openSlot(slot)
+    },
+    style: STRIP_STYLE,
+    children: items
+  })
 }
 
 // -- plugin contract ----------------------------------------------------------
