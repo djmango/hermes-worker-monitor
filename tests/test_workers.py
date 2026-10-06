@@ -2,7 +2,9 @@ import json
 import unittest
 
 from dashboard.workers import (
+    GROUP_ORDER,
     build_summary_response,
+    card_group,
     card_state,
     hash_arguments,
     is_repeated_tool_loop,
@@ -110,6 +112,41 @@ def test_response_shape_is_counts_only():
     # No card identifier, title, or assignee reaches the desktop half.
     assert "t_1" not in json.dumps(result)
     assert "default" not in json.dumps(result)
+
+
+def test_card_group_is_the_single_classification_behind_the_counts():
+    assert card_group(status="blocked", block_kind="capability") == "blocked"
+    assert card_group(status="blocked", block_kind="dependency") == "waiting"
+    # A blocked card with no typed reason needs a person.
+    assert card_group(status="blocked") == "blocked"
+    assert card_group(status="running") == "running"
+    for status in ("todo", "ready", "triage"):
+        assert card_group(status=status) == "queued"
+    assert card_group(status="scheduled") == "scheduled"
+    assert card_group(status="review") == "review"
+
+
+def test_card_group_done_today_is_a_time_window_not_a_status():
+    assert card_group(status="done", completed_at=NOW, day_start=NOW) == "done_today"
+    assert card_group(status="archived", completed_at=NOW + 1, day_start=NOW) == "done_today"
+    assert card_group(status="done", completed_at=NOW - 1, day_start=NOW) is None
+    assert card_group(status="done") is None
+    # A live status wins over the day window: one card cannot be both finished
+    # today and running now.
+    assert card_group(status="running", completed_at=NOW + 1, day_start=NOW) == "running"
+
+
+def test_every_group_the_strip_draws_is_reachable_by_the_classification():
+    seen = {
+        card_group(status="blocked", block_kind="capability"),
+        card_group(status="blocked", block_kind="dependency"),
+        card_group(status="running"),
+        card_group(status="todo"),
+        card_group(status="scheduled"),
+        card_group(status="review"),
+        card_group(status="done", completed_at=NOW, day_start=NOW),
+    }
+    assert seen == set(GROUP_ORDER)
 
 
 def load_tests(loader, tests, pattern):

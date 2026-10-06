@@ -1,9 +1,15 @@
 """Hermes Worker Monitor dashboard API.
 
-One route, one payload: the Kanban group counts and the health of the running
-workers. The route opens the local Kanban and worker session databases
-read-only and returns counts only. This fork reads no credentials, makes no
-network calls, and writes nothing.
+Two read-only routes. ``/summary`` is the one payload the footer strip reads:
+the Kanban group counts and the health of the running workers. ``/cards``
+returns the cards behind ONE group, for the popover a count opens. Both open the
+local Kanban and worker session databases read-only. This fork reads no
+credentials, makes no network calls, and writes nothing.
+
+``/cards`` is the only route that returns card identifiers, titles, and
+assignees, and only for the group that was asked for. It is deliberately
+uncached: it answers a hover, and a stale list under a live count would read as
+a fault.
 """
 
 from __future__ import annotations
@@ -20,10 +26,19 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 try:
-    from .workers import build_summary_response, hash_arguments, normalize_groups
+    from .workers import (
+        DEPENDENCY_KINDS,
+        GROUP_ORDER,
+        QUEUED_STATUSES,
+        build_summary_response,
+        card_group,
+        card_state,
+        hash_arguments,
+        normalize_groups,
+    )
 except ImportError:  # Loaded by file path by the Hermes plugin loader: no package, no sys.path entry.
 
     def _load_sibling(name: str) -> Any:
@@ -33,7 +48,12 @@ except ImportError:  # Loaded by file path by the Hermes plugin loader: no packa
         return module
 
     _workers = _load_sibling("workers")
+    DEPENDENCY_KINDS = _workers.DEPENDENCY_KINDS
+    GROUP_ORDER = _workers.GROUP_ORDER
+    QUEUED_STATUSES = _workers.QUEUED_STATUSES
     build_summary_response = _workers.build_summary_response
+    card_group = _workers.card_group
+    card_state = _workers.card_state
     hash_arguments = _workers.hash_arguments
     normalize_groups = _workers.normalize_groups
 
@@ -140,6 +160,132 @@ def _load_running_tasks() -> list[dict[str, Any]]:
     return [{"id": row[0], "assignee": row[1], "started_at": row[2]} for row in rows]
 
 
+# -- one group's cards --------------------------------------------------------
+
+# What a popover row needs. A column the board does not have is skipped, so an
+# older board still answers.
+_CARD_FIELDS = (
+    "id",
+    "title",
+    "status",
+    "assignee",
+    "priority",
+    "block_kind",
+    "created_at",
+    "started_at",
+    "completed_at",
+)
+
+# Longest title sent. The popover draws one line, and the card body never leaves
+# the database.
+_TITLE_CAP = 200
+
+# Statuses behind each status-shaped group. The other two groups are shaped by
+# ``block_kind`` and by the day boundary instead.
+_GROUP_STATUSES: dict[str, tuple[str, ...]] = {
+    "running": ("running",),
+    "queued": QUEUED_STATUSES,
+    "scheduled": ("scheduled",),
+    "review": ("review",),
+}
+
+# Per group, which card a person wants first: the longest run, then the newest
+# finish. Everything else sorts by priority, then by age.
+_GROUP_ORDER_BY = {
+    "running": (("started_at", "ASC"),),
+    "done_today": (("completed_at", "DESC"),),
+}
+_DEFAULT_ORDER_BY = (("priority", "DESC"), ("created_at", "ASC"))
+
+
+def _order_clause(group: str, columns: set[str]) -> str:
+    """ORDER BY for one group, built only from columns the board has."""
+    pairs = _GROUP_ORDER_BY.get(group) or _DEFAULT_ORDER_BY
+    parts = [f"{field} {direction}" for field, direction in pairs if field in columns]
+    parts.append("id ASC")
+    return ", ".join(parts)
+
+
+def _group_where(group: str, columns: set[str], *, day_start: int) -> tuple[str, list[Any]]:
+    """SQL that narrows the scan to a group's candidates.
+
+    ``card_group`` still decides membership after the read, so a board that
+    cannot tell the two blocked groups apart (no ``block_kind`` column) answers
+    with an empty list rather than a wrong one.
+    """
+    if group in ("blocked", "waiting"):
+        if "status" not in columns:
+            return ("WHERE 0", [])
+        if "block_kind" not in columns:
+            return ("WHERE status = ?", ["blocked"]) if group == "blocked" else ("WHERE 0", [])
+        marks = ", ".join("?" for _ in DEPENDENCY_KINDS)
+        within = "IN" if group == "waiting" else "NOT IN"
+        return (
+            f"WHERE status = ? AND COALESCE(block_kind, '') {within} ({marks})",
+            ["blocked", *DEPENDENCY_KINDS],
+        )
+    if group == "done_today":
+        if "completed_at" not in columns:
+            return ("WHERE 0", [])
+        return ("WHERE completed_at IS NOT NULL AND completed_at >= ?", [day_start])
+    statuses = _GROUP_STATUSES.get(group, ())
+    if not statuses or "status" not in columns:
+        return ("WHERE 0", [])
+    marks = ", ".join("?" for _ in statuses)
+    return (f"WHERE status IN ({marks})", list(statuses))
+
+
+def _load_group_cards(group: str, limit: int, *, day_start: int) -> list[dict[str, Any]]:
+    """Up to ``limit`` cards of one group, most relevant first."""
+    with closing(_readonly_connection(_kanban_database())) as connection:
+        columns = _task_columns(connection)
+        where, params = _group_where(group, columns, day_start=day_start)
+        fields = [field for field in _CARD_FIELDS if field in columns]
+        if not fields:
+            return []
+        rows = connection.execute(
+            f"SELECT {', '.join(fields)} FROM tasks {where} ORDER BY {_order_clause(group, columns)} LIMIT ?",
+            (*params, int(limit)),
+        ).fetchall()
+
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        card = dict(zip(fields, row))
+        if card_group(
+            status=str(card.get("status") or ""),
+            block_kind=card.get("block_kind"),
+            completed_at=card.get("completed_at"),
+            day_start=day_start,
+        ) != group:
+            continue
+        title = card.get("title")
+        if isinstance(title, str) and len(title) > _TITLE_CAP:
+            card["title"] = title[:_TITLE_CAP]
+        cards.append(card)
+    return cards
+
+
+def _build_cards_payload(group: str, limit: int) -> dict[str, Any]:
+    """One group's cards, plus that group's real total from the same fold the
+    footer strip counts with, so a capped list never reads as the whole board."""
+    now = int(time.time())
+    cards = _load_group_cards(group, limit, day_start=_local_day_start(now))
+    if group == "running":
+        # The chip colors itself by the worst live worker, so each row carries
+        # its own state instead of one flat color for the group.
+        for card in cards:
+            card["worker_state"] = card_state(_load_tool_events(card), now=now)
+    totals = normalize_groups(_load_status_counts(), _load_blocked_kinds(), done_today=_load_done_today(now))
+    return {
+        "generated_at": now,
+        "group": group,
+        "limit": int(limit),
+        "shown": len(cards),
+        "total": int(totals.get(group) or 0),
+        "cards": cards,
+    }
+
+
 def _profile_databases(assignee: str) -> list[Path]:
     """Candidate read-only stores for *assignee*, most specific first.
 
@@ -240,3 +386,18 @@ async def _cached(cache: TTLCache, lock: asyncio.Lock, fresh: int, builder: Call
 @router.get("/summary")
 async def get_summary(fresh: int = Query(default=0, ge=0, le=1)) -> dict[str, Any]:
     return await _cached(_summary_cache, _summary_lock, fresh, lambda: asyncio.to_thread(_build_summary_payload))
+
+
+@router.get("/cards")
+async def get_cards(
+    group: str = Query(..., description="One of: " + ", ".join(GROUP_ORDER)),
+    limit: int = Query(default=25, ge=1, le=50),
+) -> dict[str, Any]:
+    """The cards behind ONE group, for the popover the desktop half opens.
+
+    Uncached on purpose: it answers a hover, and a list stale enough to disagree
+    with the live count beside it reads as a fault.
+    """
+    if group not in GROUP_ORDER:
+        raise HTTPException(status_code=400, detail=f"Unknown group: {group}")
+    return await asyncio.to_thread(_build_cards_payload, group, limit)

@@ -10,8 +10,8 @@ One compact strip on the right side of the Desktop footer:
 
 - Cards that stopped and need a person come first, in red.
 - The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.
-- Hover any count for the breakdown, for example `10 running: 8 active, 2 stalled. Click for the board`.
-- Click any count to open the Kanban board page inside the app. There is no menu to open and no second screen to read.
+- Hover any count for the cards behind it: a list of that group's cards, each row with the card's dot, title, id, and age. The rows are the app's own list row from the Desktop plugin SDK, so the footer and the Kanban page cannot drift apart.
+- Click any count, or any card in the list, to open the Kanban board page inside the app. There is no menu to open and no second screen to read.
 - A group with no cards is left out, so the strip stays short. A quiet board shows the queue, or `idle`.
 
 ## What this fork removes, and why
@@ -29,19 +29,20 @@ Removed:
 
 What is left:
 
-- One route, `GET /summary`, on the local backend.
+- Two routes on the local backend: `GET /summary` for the strip, and `GET /cards` for the list a count opens.
 - Read-only SQLite access to `kanban.db`, plus each profile's `state.db` for worker activity.
-- Counts only. The payload carries group counts and the count of active, stalled, and looping workers. No card identifier, title, assignee, or tool argument leaves the backend.
+- `GET /summary` is counts only. The payload carries group counts and the count of active, stalled, and looping workers. No card identifier, title, assignee, or tool argument is in it.
+- `GET /cards` returns the cards of the one group that was asked for, and only the fields a row draws: id, title, status, assignee, priority, blocked reason, and the created, started, and completed timestamps. The card body never leaves the database, and titles are capped at 200 characters.
 - Worker activity metadata inside the backend: tool name, a 16-character SHA-256 hash of the arguments, and a timestamp, used for stall and loop detection.
 
 Counted, against upstream v0.2.2:
 
 | | Upstream | This fork |
 |---|---|---|
-| Product lines (backend + desktop) | 1,488 | 742 |
-| Backend (`dashboard/`) | 682 | 386 |
-| Desktop (`desktop/plugin.js`) | 796 | 356 |
-| Tests | 838 | 359 |
+| Product lines (backend + desktop) | 1,488 | 1,111 |
+| Backend (`dashboard/`) | 682 | 578 |
+| Desktop (`desktop/plugin.js`) | 796 | 533 |
+| Tests | 838 | 522 |
 
 ## Trust surface
 
@@ -88,13 +89,13 @@ The backend reads running Kanban cards and the local activity of their workers:
 - Stalled: no activity for more than five minutes.
 - Loop: the same tool with the same arguments appears at least four times in a row in the latest events.
 
-Loop has priority over stalled, and stalled has priority over active when several workers run. The footer dot takes the worst of the three, and the tooltip prints the split.
+Loop has priority over stalled, and stalled has priority over active when several workers run. The footer dot takes the worst of the three. Each row in the hover list for `running` carries its own state color, so one stalled worker is visible inside a healthy group.
 
 Activity comes from the worker's own session store. A named profile keeps its sessions in `profiles/<name>/state.db`, and the default profile keeps them in the root `state.db`, so the reader tries the named store first and then the root store for a default-profile card. Both are opened read-only.
 
 ## Privacy
 
-The backend opens the local databases in read-only mode and returns counts only. Message content, card titles, assignees, and tool arguments never leave the backend, and arguments are represented by hashes for the stall and loop test.
+The backend opens the local databases in read-only mode and writes nothing. `GET /summary` returns counts only. `GET /cards` returns the cards of the one group that was asked for, with the fields a row draws and no card body, and it is answered only to the app that asked. Message content and tool arguments never leave the backend, and arguments are represented by hashes for the stall and loop test.
 
 ## Development
 
@@ -102,6 +103,8 @@ Requirements: Python 3.11+ with `pytest`, and Node.js for the syntax check. The 
 
 ```sh
 PYTHONPATH=. python3 -m pytest tests/ -q
+# or, without pytest:
+PYTHONPATH=. python3 -m unittest discover -s tests -t tests
 node --check desktop/plugin.js
 ```
 

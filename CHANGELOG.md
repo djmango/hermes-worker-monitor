@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2
+
+- Hovering a count now opens a popover with the cards behind that number instead of a text tooltip. Each row carries the card's dot, title, id, and age, and the rows are the app's own `PanelListRow` with `PanelPill` and `PanelSectionLabel`, so the footer and the app's Kanban list cannot drift apart.
+- The `Click for the board` sentence is gone, and the tooltip with it. A count that needed a whole sentence to explain itself was not carrying its weight.
+- The popover header shows the group's real total, and a capped list says how many more are on the board. A long group never reads as the whole board.
+- The `running` rows carry their own worker state, so a stalled or looping worker is visible inside a healthy group instead of one flat color.
+- New backend route `GET /cards?group=<name>&limit=<n>`. It reuses the same classification as the counts (`card_group` in `workers.py`), so a number and the cards under it cannot disagree. A test asserts, for every group, that the list length equals the count beside it.
+- Only the fields a row draws come back: id, title, status, assignee, priority, blocked reason, and the created, started, and completed timestamps. The card body and the tool arguments stay in the database, and titles are capped at 200 characters.
+- `/cards` is uncached on purpose: it answers a hover, and a list stale enough to disagree with the live count beside it reads as a fault.
+- A backend that predates the route answers 404, and the popover says so in one line instead of showing an empty list.
+- Tests: 30.
+
 ## 0.2.1
 
 - The desktop half is on by default (`defaultEnabled: true`). The strip is the point of the plugin and it reads counts only, so it no longer needs a switch flip before it appears. It can still be turned off in Capabilities, Plugins.

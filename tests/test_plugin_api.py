@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import os
 import sqlite3
@@ -6,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from fastapi import HTTPException
 
 from dashboard import plugin_api
 
@@ -43,9 +46,9 @@ def _board(path: Path, rows, *, old_schema=False) -> None:
         )
 
 
-def test_route_is_relative_and_registered():
+def test_routes_are_relative_and_registered():
     paths = {route.path for route in plugin_api.router.routes}
-    assert paths == {"/summary"}
+    assert paths == {"/summary", "/cards"}
 
 
 def test_sqlite_connections_are_enforced_read_only():
@@ -229,6 +232,129 @@ def test_no_em_dashes_in_shipped_sources():
     ]
     for path in shipped:
         assert "\u2014" not in path.read_text(encoding="utf-8"), f"em dash found in {path.name}"
+
+
+# -- the card list behind one count ------------------------------------------
+
+
+def _board_with_every_group() -> list[tuple]:
+    day = plugin_api._local_day_start()
+    return [
+        ("t_blocked_a", "Needs a person", "blocked", "default", NOW, None, "needs_input"),
+        ("t_blocked_b", "Another stop", "blocked", "default", NOW, None, "capability"),
+        ("t_waiting", "Waiting on its parent", "blocked", "default", NOW, None, "dependency"),
+        ("t_run", "Running worker", "running", "default", NOW),
+        ("t_queued", "Ready to pick up", "todo", "default", NOW),
+        ("t_scheduled", "Scheduled for later", "scheduled", "default", NOW),
+        ("t_review", "Awaiting review", "review", "default", NOW),
+        ("t_done_today", "Finished today", "done", "default", NOW, day + 1, None),
+        ("t_done_older", "Finished last week", "done", "default", NOW, day - 1, None),
+    ]
+
+
+def test_the_card_list_under_a_count_always_matches_that_count():
+    """The popover list and the strip count come from ONE classification."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", _board_with_every_group())
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            totals = plugin_api.normalize_groups(
+                plugin_api._load_status_counts(),
+                plugin_api._load_blocked_kinds(),
+                done_today=plugin_api._load_done_today(),
+            )
+            payloads = {group: plugin_api._build_cards_payload(group, 25) for group in plugin_api.GROUP_ORDER}
+
+    for group, payload in payloads.items():
+        assert payload["total"] == totals[group], group
+        assert payload["shown"] == len(payload["cards"]) == totals[group], group
+        assert payload["group"] == group
+
+    assert [card["id"] for card in payloads["blocked"]["cards"]] == ["t_blocked_a", "t_blocked_b"]
+    assert [card["id"] for card in payloads["waiting"]["cards"]] == ["t_waiting"]
+    assert [card["id"] for card in payloads["running"]["cards"]] == ["t_run"]
+    assert [card["id"] for card in payloads["queued"]["cards"]] == ["t_queued"]
+    assert [card["id"] for card in payloads["scheduled"]["cards"]] == ["t_scheduled"]
+    assert [card["id"] for card in payloads["review"]["cards"]] == ["t_review"]
+    assert [card["id"] for card in payloads["done_today"]["cards"]] == ["t_done_today"]
+
+
+def test_a_capped_card_list_still_reports_the_real_total():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [
+            ("t_blocked_a", "One", "blocked", "default", NOW, None, "needs_input"),
+            ("t_blocked_b", "Two", "blocked", "default", NOW, None, "capability"),
+            ("t_blocked_c", "Three", "blocked", "default", NOW, None, "needs_input"),
+        ])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            payload = plugin_api._build_cards_payload("blocked", 2)
+
+    assert payload["total"] == 3
+    assert payload["shown"] == 2
+    assert payload["limit"] == 2
+
+
+def test_the_card_list_carries_no_card_body_or_arguments():
+    """Only the fields a row draws leave the database."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [("t_blocked", "Needs a person", "blocked", "default", NOW, None, "needs_input")])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            payload = plugin_api._build_cards_payload("blocked", 25)
+
+    card = payload["cards"][0]
+    assert set(card) <= set(plugin_api._CARD_FIELDS)
+    assert "body" not in card
+    assert card["title"] == "Needs a person"
+    assert card["block_kind"] == "needs_input"
+
+
+def test_a_board_without_block_kind_answers_blocked_and_no_waiting():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [("t_blocked", "Needs a person", "blocked", "default", NOW)], old_schema=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            blocked = plugin_api._build_cards_payload("blocked", 25)
+            waiting = plugin_api._build_cards_payload("waiting", 25)
+            done = plugin_api._build_cards_payload("done_today", 25)
+
+    assert [card["id"] for card in blocked["cards"]] == ["t_blocked"]
+    assert waiting["cards"] == []
+    # No completed_at column on the older board: an empty window, not a guess.
+    assert done["cards"] == []
+
+
+def test_a_running_card_carries_its_own_worker_state():
+    """The running rows color themselves the way the chip does."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [("t_run", "Running worker", "running", "default", NOW)])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True), \
+                patch.object(plugin_api, "_load_tool_events", lambda task: []):
+            payload = plugin_api._build_cards_payload("running", 25)
+
+    assert payload["cards"][0]["worker_state"] == "active"
+
+
+def test_an_unknown_group_is_refused():
+    try:
+        asyncio.run(plugin_api.get_cards(group="something-new"))
+    except HTTPException as error:
+        assert error.status_code == 400
+    else:
+        raise AssertionError("an unknown group was accepted")
+
+
+def test_the_cards_route_bounds_its_page_by_default():
+    parameter = inspect.signature(plugin_api.get_cards).parameters["limit"]
+    assert parameter.default.default == 25
+    assert any(getattr(constraint, "le", None) == 50 for constraint in parameter.default.metadata)
 
 
 def load_tests(loader, tests, pattern):

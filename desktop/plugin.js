@@ -3,31 +3,40 @@
  *
  * One footer item (STATUSBAR_AREAS.right) showing the Kanban board groups. The
  * running count carries a state dot, colored by the worst running worker
- * (looping beats stalled beats active). Hover any count for the breakdown.
- * Click any count to open the Kanban board page inside the app.
+ * (looping beats stalled beats active).
  *
- * This fork reads counts only. There is no quota item, so the desktop half
- * never asks the backend for provider data and no credential reaches it.
+ * Hovering a count opens a popover with the cards behind that number. The rows
+ * are the app's own panel list row (PanelListRow) with PanelPill and
+ * PanelSectionLabel, so a card reads here the way it reads in the app's Kanban
+ * list and the two cannot drift. Clicking a count, or a card, opens the board.
+ *
+ * This fork reads counts and card titles only. There is no quota item, so the
+ * desktop half never asks the backend for provider data and no credential
+ * reaches it.
  *
  * Polling goes through `ctx.rest` (namespace-relative paths only, see the
  * plugin contract) with React Query `refetchInterval`, so the timer is torn
  * down automatically when the item unmounts and the plugin is disabled or
- * hot-reloaded. A failed request never leaves stale numbers on screen.
+ * hot-reloaded. A failed request never leaves stale numbers on screen. The card
+ * list is fetched only while one of its popovers is open.
  *
  * Plain ESM, loaded uncompiled: the UI is `jsx()` calls, not JSX syntax. Only
  * `@hermes/plugin-sdk`, `react`, and `react/jsx-runtime` resolve.
  */
 
 import {
+  PanelListRow,
+  PanelPill,
+  PanelSectionLabel,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   STATUSBAR_AREAS,
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
   host,
   icons,
   useQuery
 } from '@hermes/plugin-sdk'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-worker-monitor'
@@ -38,8 +47,14 @@ const BOARD_PATH = '/kanban'
 // Polling cadence (ms). Never below 10s.
 const SUMMARY_INTERVAL_MS = 10_000
 
-// Board groups that need a person before anything else moves.
-const NEEDS_ACTION = ['blocked', 'waiting']
+// Cards requested per popover. The header always shows the group's real total
+// from the same payload the strip counts, so a capped list never reads as the
+// whole board.
+const CARD_LIMIT = 25
+
+// How long the panel survives the pointer leaving the chip. Without a grace
+// period, the gap between the chip and the panel closes it on the way in.
+const HOVER_CLOSE_MS = 140
 
 // Traffic-light colors for the running state. Mid-saturation hues that stay
 // legible on both the light and dark themes.
@@ -47,8 +62,6 @@ const GREEN = '#30d158'
 const AMBER = '#ff9f0a'
 const RED = '#ff6b60'
 const STATE_COLOR = { active: GREEN, stalled: AMBER, loop: RED }
-
-const CLICK_HINT = 'Click for the board'
 
 // Shared chrome styling for interactive statusbar items (matches core). Core
 // already uses every class here, so the prebuilt Tailwind bundle carries them.
@@ -78,13 +91,34 @@ const LABEL_COLOR = 'var(--ui-text-quaternary)'
 const COUNT_COLOR = 'var(--ui-text-secondary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
 
+const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw' }
+const POPOVER_BODY_STYLE = {
+  display: 'flex',
+  flexDirection: 'column',
+  maxHeight: '19rem',
+  overflowY: 'auto'
+}
+const POPOVER_NOTE_STYLE = { padding: '0.375rem', color: QUIET_COLOR, fontSize: '0.6875rem' }
+
+// One entry per group: the chip's color and the popover's dot color, so a red
+// count opens a red-dotted list.
+const GROUPS = {
+  blocked: { dot: RED, label: 'blocked', tone: 'bad' },
+  waiting: { dot: AMBER, label: 'waiting', tone: 'warn' },
+  running: { dot: GREEN, label: 'running', tone: 'good' },
+  queued: { dot: LABEL_COLOR, label: 'queued', tone: 'muted' },
+  scheduled: { dot: LABEL_COLOR, label: 'scheduled', tone: 'muted' },
+  review: { dot: AMBER, label: 'review', tone: 'warn' },
+  done: { dot: GREEN, label: 'done today', tone: 'good' }
+}
+
 // -- pure helpers -------------------------------------------------------------
 
 function toCount(value) {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
 }
 
-/** The five groups the strip renders, as plain integers. */
+/** The groups the strip renders, as plain integers. */
 function readGroups(data) {
   const source = data && typeof data.groups === 'object' && data.groups !== null ? data.groups : {}
   return {
@@ -113,19 +147,38 @@ function plural(count, noun) {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
-/** "10 running: 8 active, 1 stalled, 1 looping." with only live numbers. */
-function runningBreakdown(count, workers) {
-  const parts = [`${workers.active} active`]
-  if (workers.stalled > 0) parts.push(plural(workers.stalled, 'stalled'))
-  if (workers.looping > 0) parts.push(plural(workers.looping, 'looping'))
-  return `${count} running: ${parts.join(', ')}`
-}
-
 function stateColor(state) {
   return STATE_COLOR[state] ?? GREEN
 }
 
-// -- data hook ----------------------------------------------------------------
+/** The clock a card's age is measured from: start, finish, or filing. */
+function cardStamp(card) {
+  if (card.status === 'running') return card.started_at || card.created_at
+  if (card.status === 'done' || card.status === 'archived') return card.completed_at || card.created_at
+  return card.created_at
+}
+
+/** Compact age for a row's trailing meta. Empty when the board has no clock. */
+function ageLabel(stamp, now) {
+  const seconds = Math.floor(Number(now) - Number(stamp))
+  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`
+  return `${Math.floor(seconds / 86_400)}d`
+}
+
+function cardTitle(card) {
+  const title = typeof card.title === 'string' ? card.title.trim() : ''
+  return title || String(card.id ?? 'untitled')
+}
+
+/** Row meta: the card id, then its age. Either half can be missing. */
+function cardMeta(card, now) {
+  return [String(card.id ?? ''), ageLabel(cardStamp(card), now)].filter(Boolean).join('  ')
+}
+
+// -- data hooks ---------------------------------------------------------------
 
 /**
  * Polls `path` at `intervalMs` through React Query on the cached backend path.
@@ -147,50 +200,172 @@ function useSummary(ctx, path, intervalMs) {
   return { data: failed ? null : query.data, error: failed }
 }
 
-// -- chrome helpers -----------------------------------------------------------
+/**
+ * The cards behind one count. Fetched only while its popover is open, so an
+ * idle statusbar stays silent. A connection whose plugin backend predates the
+ * route answers 404, which lands here as `error` and the panel says so in one
+ * line instead of showing a wrong or empty list.
+ */
+function useCards(ctx, group, enabled) {
+  const query = useQuery({
+    queryKey: [ID, 'cards', group],
+    queryFn: () => ctx.rest(`/cards?group=${encodeURIComponent(group)}&limit=${CARD_LIMIT}`),
+    enabled,
+    retry: false,
+    staleTime: 10_000
+  })
 
-function withTooltip(trigger, label, key) {
-  return jsxs(
-    TooltipProvider,
-    {
-      delayDuration: 0,
-      children: [
-        jsxs(Tooltip, {
-          children: [
-            jsx(TooltipTrigger, { asChild: true, children: trigger }),
-            jsx(TooltipContent, { children: label })
-          ]
-        })
-      ]
-    },
-    key
-  )
+  const failed = query.isError === true || query.isRefetchError === true
+  return {
+    cards: Array.isArray(query.data?.cards) ? query.data.cards : [],
+    error: failed,
+    loading: query.isPending === true,
+    total: toCount(query.data?.total)
+  }
 }
 
-/** One clickable count: an optional dot or icon, the number, then the label. */
-function countItem({ ctx, key, dot, icon, count, label, tooltip, tone, toneLabel }) {
+// -- the popover --------------------------------------------------------------
+
+/** One card, in the app's own list-row shape. */
+function CardRow({ card, group, now, onOpen }) {
+  const spec = GROUPS[group] ?? GROUPS.queued
+  const dot = group === 'running' ? STATE_COLOR[card.worker_state] ?? spec.dot : spec.dot
+
+  return jsx(PanelListRow, {
+    active: false,
+    lead: jsx('span', { style: { ...DOT_STYLE, backgroundColor: dot } }),
+    meta: cardMeta(card, now),
+    onSelect: onOpen,
+    rowKey: String(card.id ?? cardTitle(card)),
+    title: cardTitle(card)
+  })
+}
+
+function PopoverBody({ cards, error, group, loading, now, onOpen, total }) {
+  if (error) {
+    return jsx('div', {
+      style: POPOVER_NOTE_STYLE,
+      children: 'This connection has no card list yet.'
+    })
+  }
+
+  if (cards.length === 0) {
+    return jsx('div', {
+      style: POPOVER_NOTE_STYLE,
+      children: loading ? 'Loading cards' : 'No cards in this group.'
+    })
+  }
+
+  const rows = cards.map(card => CardRow({ card, group, now, onOpen }))
+
+  if (total > cards.length) {
+    rows.push(
+      jsx('div', {
+        key: 'more',
+        style: POPOVER_NOTE_STYLE,
+        children: `${total - cards.length} more on the board`
+      })
+    )
+  }
+
+  return jsx('div', { style: POPOVER_BODY_STYLE, children: rows })
+}
+
+/**
+ * A count chip that opens its cards on hover. Radix opens the panel from the
+ * trigger, and the enter/leave pair on BOTH halves keeps it open across the gap
+ * between them. Focus opens it too, so the list is reachable from the keyboard.
+ */
+function CountWithCards({ ctx, count, group, icon, label, tone, toneLabel, showDot }) {
+  const spec = GROUPS[group] ?? GROUPS.queued
+  const [open, setOpen] = useState(false)
+  const closeTimer = useRef(null)
+  const { cards, error, loading, total } = useCards(ctx, group, open)
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+  }
+
+  const show = () => {
+    cancelClose()
+    setOpen(true)
+  }
+
+  const hide = () => {
+    cancelClose()
+    closeTimer.current = setTimeout(() => setOpen(false), HOVER_CLOSE_MS)
+  }
+
+  useEffect(() => cancelClose, [])
+
+  const openBoard = () => {
+    setOpen(false)
+    try {
+      host.navigate(BOARD_PATH)
+    } catch {
+      // Bridge unavailable: never break the statusbar.
+    }
+  }
+
   const children = []
-  if (dot) children.push(jsx('span', { className: 'shrink-0', style: { ...DOT_STYLE, backgroundColor: dot } }))
+  if (showDot) children.push(jsx('span', { className: 'shrink-0', style: { ...DOT_STYLE, backgroundColor: tone ?? GREEN } }))
   else if (icon) children.push(icon)
   children.push(jsx('span', { className: 'tabular-nums font-medium', style: { color: tone }, children: String(count) }))
   if (label) children.push(jsx('span', { style: { color: toneLabel ?? LABEL_COLOR }, children: label }))
 
   const trigger = jsx('button', {
-    type: 'button',
+    'aria-label': `${label ?? group}: ${plural(count, 'card')}`,
     className: ITEM_CLASS,
+    onBlur: hide,
+    onClick: openBoard,
+    onFocus: show,
+    onPointerEnter: show,
+    onPointerLeave: hide,
     style: ITEM_STYLE,
-    'aria-label': tooltip,
-    onClick: () => {
-      try {
-        host.navigate(BOARD_PATH)
-      } catch {
-        // Bridge unavailable: never break the statusbar.
-      }
-    },
+    type: 'button',
     children
   })
 
-  return withTooltip(trigger, tooltip, key)
+  const panel = jsx(PopoverContent, {
+    align: 'end',
+    // A hover panel must never take focus away from the composer.
+    onOpenAutoFocus: event => event.preventDefault(),
+    onPointerEnter: show,
+    onPointerLeave: hide,
+    side: 'top',
+    sideOffset: 8,
+    style: POPOVER_STYLE,
+    children: jsxs('div', {
+      style: { display: 'flex', flexDirection: 'column' },
+      children: [
+        jsxs('div', {
+          className: 'mb-1 flex items-center justify-between gap-2 px-1',
+          children: [
+            jsx(PanelSectionLabel, { children: spec.label }),
+            jsx(PanelPill, { tone: spec.tone, children: String(total || count) })
+          ]
+        }),
+        PopoverBody({
+          cards,
+          error,
+          group,
+          loading,
+          now: Math.floor(Date.now() / 1000),
+          onOpen: openBoard,
+          total: total || count
+        })
+      ]
+    })
+  })
+
+  return jsxs(Popover, {
+    onOpenChange: setOpen,
+    open,
+    children: [jsx(PopoverTrigger, { asChild: true, children: trigger }), open ? panel : null]
+  })
 }
 
 // -- the footer item ----------------------------------------------------------
@@ -204,14 +379,22 @@ function WorkerStrip({ ctx }) {
   if (error) {
     return jsx('span', {
       style: STRIP_STYLE,
-      children: countItem({
-        ctx,
-        key: 'unavailable',
-        icon: jsx(icons.Users, { className: 'shrink-0 size-3.5', style: { color: LABEL_COLOR } }),
-        count: 0,
-        label: 'n/a',
-        tooltip: 'Board counts unavailable',
-        tone: LABEL_COLOR
+      children: jsx('button', {
+        'aria-label': 'Board counts unavailable',
+        className: ITEM_CLASS,
+        onClick: () => {
+          try {
+            host.navigate(BOARD_PATH)
+          } catch {
+            // Bridge unavailable: never break the statusbar.
+          }
+        },
+        style: ITEM_STYLE,
+        type: 'button',
+        children: [
+          jsx(icons.Users, { className: 'shrink-0 size-3.5', style: { color: LABEL_COLOR } }),
+          jsx('span', { style: { color: LABEL_COLOR }, children: 'n/a' })
+        ]
       })
     })
   }
@@ -220,13 +403,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.blocked > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'blocked',
-        icon: jsx(icons.AlertTriangle, { className: 'shrink-0 size-3.5' }),
         count: groups.blocked,
+        group: 'blocked',
+        icon: jsx(icons.AlertTriangle, { className: 'shrink-0 size-3.5' }),
         label: 'blocked',
-        tooltip: `${plural(groups.blocked, 'card')} stopped and needs a person. ${CLICK_HINT}`,
         tone: RED,
         toneLabel: RED
       })
@@ -235,13 +417,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.waiting > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'waiting',
-        icon: jsx(icons.Clock, { className: 'shrink-0 size-3.5', style: { color: QUIET_COLOR } }),
         count: groups.waiting,
+        group: 'waiting',
+        icon: jsx(icons.Clock, { className: 'shrink-0 size-3.5', style: { color: QUIET_COLOR } }),
         label: 'waiting',
-        tooltip: `${plural(groups.waiting, 'card')} blocked on another card, clears on its own. ${CLICK_HINT}`,
         tone: QUIET_COLOR
       })
     )
@@ -249,14 +430,14 @@ function WorkerStrip({ ctx }) {
 
   if (groups.running > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'running',
-        dot: stateColor(workers.state),
         count: groups.running,
+        group: 'running',
         label: 'running',
-        tooltip: `${runningBreakdown(groups.running, workers)}. ${CLICK_HINT}`,
-        tone: COUNT_COLOR
+        showDot: true,
+        tone: stateColor(workers.state),
+        toneLabel: COUNT_COLOR
       })
     )
   }
@@ -265,13 +446,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.queued > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'queued',
-        icon: jsx(icons.CircleIcon, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         count: groups.queued,
+        group: 'queued',
+        icon: jsx(icons.CircleIcon, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'queued',
-        tooltip: `${plural(groups.queued, 'card')} waiting for a worker. ${CLICK_HINT}`,
         tone: QUIET_COLOR
       })
     )
@@ -279,13 +459,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.scheduled > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'scheduled',
-        icon: jsx(icons.Clock, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         count: groups.scheduled,
+        group: 'scheduled',
+        icon: jsx(icons.Clock, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'scheduled',
-        tooltip: `${plural(groups.scheduled, 'card')} scheduled. ${CLICK_HINT}`,
         tone: QUIET_COLOR
       })
     )
@@ -293,13 +472,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.review > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'review',
-        icon: jsx(icons.Eye, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         count: groups.review,
+        group: 'review',
+        icon: jsx(icons.Eye, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'review',
-        tooltip: `${plural(groups.review, 'card')} waiting for review. ${CLICK_HINT}`,
         tone: QUIET_COLOR
       })
     )
@@ -307,13 +485,12 @@ function WorkerStrip({ ctx }) {
 
   if (groups.doneToday > 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'done',
-        icon: jsx(icons.CheckCircle2, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         count: groups.doneToday,
+        group: 'done',
+        icon: jsx(icons.CheckCircle2, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'done today',
-        tooltip: `${plural(groups.doneToday, 'card')} finished today. ${CLICK_HINT}`,
         tone: QUIET_COLOR
       })
     )
@@ -322,13 +499,12 @@ function WorkerStrip({ ctx }) {
   // An idle board still says something: the backlog, or nothing at all.
   if (items.length === 0) {
     items.push(
-      countItem({
+      CountWithCards({
         ctx,
-        key: 'idle',
-        icon: jsx(icons.Users, { className: 'shrink-0 size-3.5', style: { color: LABEL_COLOR } }),
         count: 0,
+        group: 'queued',
+        icon: jsx(icons.Users, { className: 'shrink-0 size-3.5', style: { color: LABEL_COLOR } }),
         label: 'idle',
-        tooltip: `No cards running or blocked. ${CLICK_HINT}`,
         tone: LABEL_COLOR
       })
     )

@@ -1,7 +1,7 @@
 {
   "name": "hermes-worker-monitor",
   "label": "Hermes Worker Monitor",
-  "description": "Kanban board groups and worker health for Hermes Desktop: blocked first, live running state, one click to the board.",
-  "version": "0.2.1",
+  "description": "Kanban board groups and worker health for Hermes Desktop: blocked first, live running state, hover a count for the cards behind it, one click to the board.",
+  "version": "0.2.2",
   "api": "plugin_api.py"
 }

@@ -24,6 +24,10 @@ QUEUED_STATUSES = ("todo", "ready", "triage")
 # Blocked on another card. The rest of the blocked column needs a person.
 DEPENDENCY_KINDS = ("dependency",)
 
+# The footer groups, in strip order. ``done_today`` is a time window rather than
+# a status, which is why it is named apart from the status columns.
+GROUP_ORDER = ("blocked", "waiting", "running", "queued", "scheduled", "review", "done_today")
+
 BOARD_PATH = "/kanban"
 
 
@@ -125,6 +129,34 @@ def normalize_groups(
         "review": count("review"),
         "done_today": max(0, int(done_today)),
     }
+
+
+def card_group(
+    *,
+    status: str,
+    block_kind: str | None = None,
+    completed_at: int | None = None,
+    day_start: int = 0,
+) -> str | None:
+    """The one footer group a card belongs to, or None when no group counts it.
+
+    This is the single classification behind both the counts and the card list,
+    so a number and the cards under it cannot disagree.
+    """
+    kind = str(block_kind or "")
+    if status == "blocked":
+        return "waiting" if kind in DEPENDENCY_KINDS else "blocked"
+    if status == "running":
+        return "running"
+    if status in QUEUED_STATUSES:
+        return "queued"
+    if status == "scheduled":
+        return "scheduled"
+    if status == "review":
+        return "review"
+    if completed_at is not None and int(completed_at) >= int(day_start):
+        return "done_today"
+    return None
 
 
 def build_summary_response(
