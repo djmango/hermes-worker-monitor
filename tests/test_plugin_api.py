@@ -216,6 +216,23 @@ def test_module_reads_no_credentials_and_makes_no_network_calls():
         assert forbidden not in source, f"unexpected reference to {forbidden!r} in plugin_api.py"
 
 
+def test_the_desktop_half_renders_its_components_instead_of_calling_them():
+    """A component that owns hooks must be RENDERED, not called as a function.
+
+    The strip draws a variable number of count chips, so calling one as a plain
+    function hands React a different hook count between renders: it throws
+    (minified error #300) and the whole footer item vanishes. Seen live.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    for component in ("CardRow", "CountWithCards", "PopoverBody"):
+        call = f"{component}({{"
+        definition = f"function {component}({{"
+        assert source.count(call) == source.count(definition), f"{component} is called as a plain function"
+        assert f"jsx({component}," in source, f"{component} is never rendered"
+
+
 def test_no_em_dashes_in_shipped_sources():
     """House rule for this fork: no em dashes in code, docs, or UI copy."""
     root = Path(__file__).resolve().parent.parent

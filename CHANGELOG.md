@@ -10,7 +10,8 @@
 - Only the fields a row draws come back: id, title, status, assignee, priority, blocked reason, and the created, started, and completed timestamps. The card body and the tool arguments stay in the database, and titles are capped at 200 characters.
 - `/cards` is uncached on purpose: it answers a hover, and a list stale enough to disagree with the live count beside it reads as a fault.
 - A backend that predates the route answers 404, and the popover says so in one line instead of showing an empty list.
-- Tests: 30.
+- Fixed before the release: the strip rendered its count chips by calling the component as a plain function, so React threw (minified error `#300`) the moment the group set changed and the footer item disappeared. The chips are rendered through `jsx(...)` now, and a test fails if a hook-owning component is called that way again.
+- Tests: 31.
 
 ## 0.2.1
 

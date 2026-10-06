@@ -256,7 +256,12 @@ function PopoverBody({ cards, error, group, loading, now, onOpen, total }) {
     })
   }
 
-  const rows = cards.map(card => CardRow({ card, group, now, onOpen }))
+  // Every component here is RENDERED (`jsx(Type, props)`), never CALLED as a
+  // plain function: a component that owns hooks must keep a stable hook order,
+  // and the strip's group set changes from render to render.
+  const rows = cards.map(card =>
+    jsx(CardRow, { card, group, key: String(card.id ?? cardTitle(card)), now, onOpen })
+  )
 
   if (total > cards.length) {
     rows.push(
@@ -348,7 +353,7 @@ function CountWithCards({ ctx, count, group, icon, label, tone, toneLabel, showD
             jsx(PanelPill, { tone: spec.tone, children: String(total || count) })
           ]
         }),
-        PopoverBody({
+        jsx(PopoverBody, {
           cards,
           error,
           group,
@@ -403,7 +408,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.blocked > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'blocked',
         ctx,
         count: groups.blocked,
         group: 'blocked',
@@ -417,7 +423,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.waiting > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'waiting',
         ctx,
         count: groups.waiting,
         group: 'waiting',
@@ -430,7 +437,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.running > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'running',
         ctx,
         count: groups.running,
         group: 'running',
@@ -446,7 +454,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.queued > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'queued',
         ctx,
         count: groups.queued,
         group: 'queued',
@@ -459,7 +468,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.scheduled > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'scheduled',
         ctx,
         count: groups.scheduled,
         group: 'scheduled',
@@ -472,7 +482,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.review > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'review',
         ctx,
         count: groups.review,
         group: 'review',
@@ -485,7 +496,8 @@ function WorkerStrip({ ctx }) {
 
   if (groups.doneToday > 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'done',
         ctx,
         count: groups.doneToday,
         group: 'done',
@@ -499,7 +511,8 @@ function WorkerStrip({ ctx }) {
   // An idle board still says something: the backlog, or nothing at all.
   if (items.length === 0) {
     items.push(
-      CountWithCards({
+      jsx(CountWithCards, {
+        key: 'idle',
         ctx,
         count: 0,
         group: 'queued',
