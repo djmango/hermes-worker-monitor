@@ -7,10 +7,14 @@
  *
  * Hovering a count opens a popover with the cards behind that number. Only one
  * panel is ever open: every chip shares one open slot, so moving across the
- * strip closes the panel behind you. The rows are the app's own panel list row
+ * strip closes the panel behind you. The panel stays up while the pointer is on
+ * it, so a card can be clicked. The rows are the app's own panel list row
  * (PanelListRow) with PanelPill and PanelSectionLabel, so a card reads here the
  * way it reads in the app's Kanban list and the two cannot drift. Clicking a
  * count, or a card, opens the board.
+ *
+ * A chip is an icon and a count, nothing else: the group's name lives in the
+ * panel header, and the chips sit close together.
  *
  * This fork reads counts and card titles only. There is no quota item, so the
  * desktop half never asks the backend for provider data and no credential
@@ -56,9 +60,10 @@ const SUMMARY_INTERVAL_MS = 10_000
 // whole board.
 const CARD_LIMIT = 25
 
-// How long the panel survives the pointer leaving the chip. Without a grace
-// period, the gap between the chip and the panel closes it on the way in.
-const HOVER_CLOSE_MS = 140
+// How long the panel waits for the pointer to reach it. The timer is a
+// heartbeat, not a countdown: while pointer events keep arriving on a chip, the
+// strip, or the panel, the slot stays taken, however slow the path is.
+const HOVER_CLOSE_MS = 260
 
 // ONE popover at a time. Every chip reports into this shared slot, so taking it
 // closes the one before it instead of leaving a row of panels open across the
@@ -66,42 +71,52 @@ const HOVER_CLOSE_MS = 140
 // moving out of an open panel onto another chip always switches the panel.
 const $openSlot = atom(null)
 let closeTimer = null
-let closeToken = 0
+let lastInsideAt = 0
 
-function cancelClose() {
+function clearCloseTimer() {
   if (closeTimer !== null) {
     clearTimeout(closeTimer)
     closeTimer = null
   }
-  // Invalidates any timer still in flight, so a stale one cannot close a panel
-  // that another chip just opened.
-  closeToken += 1
+}
+
+/** The pointer is on a chip or on the panel: hold the slot. */
+function markInside() {
+  lastInsideAt = Date.now()
+  clearCloseTimer()
 }
 
 /** Take the slot for `slot`, closing whatever was open. */
 function openSlot(slot) {
-  cancelClose()
+  markInside()
   if ($openSlot.get() !== slot) $openSlot.set(slot)
 }
 
-/** Release the slot after the grace period, so the pointer can reach the panel. */
-function closeSlotSoon() {
-  cancelClose()
-  const token = closeToken
+/**
+ * Ask for the slot to be released. The timer re-checks the heartbeat first, so
+ * a timer left over from another chip can never close a panel the pointer has
+ * since moved onto, and a slow path onto the panel never loses the race.
+ */
+function releaseSlot() {
+  clearCloseTimer()
   closeTimer = setTimeout(() => {
     closeTimer = null
-    if (token === closeToken) $openSlot.set(null)
+    if (Date.now() - lastInsideAt < HOVER_CLOSE_MS) {
+      releaseSlot()
+      return
+    }
+    $openSlot.set(null)
   }, HOVER_CLOSE_MS)
 }
 
 /** Release `slot` now: escape, an outside click, or a board navigation. */
 function closeSlot(slot) {
-  cancelClose()
+  clearCloseTimer()
   if ($openSlot.get() === slot) $openSlot.set(null)
 }
 
 function closeAnySlot() {
-  cancelClose()
+  clearCloseTimer()
   if ($openSlot.get() !== null) $openSlot.set(null)
 }
 
@@ -123,21 +138,30 @@ const RED = '#ff6b60'
 const STATE_COLOR = { active: GREEN, stalled: AMBER, loop: RED }
 
 // Shared chrome styling for interactive statusbar items (matches core). Core
-// already uses every class here, so the prebuilt Tailwind bundle carries them.
-const ITEM_CLASS =
-  'inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-[0.6875rem] transition-colors hover:bg-(--chrome-action-hover)'
+// already uses both classes here, so the prebuilt Tailwind bundle carries them.
+const ITEM_CLASS = 'whitespace-nowrap rounded-md transition-colors hover:bg-(--chrome-action-hover)'
 
 // Row layout lives in inline styles. The desktop app ships a prebuilt Tailwind
 // bundle: arbitrary utilities used only by plugins are never generated, so a
 // layout that leans on them can silently collapse inside the statusbar. Inline
 // styles always apply.
-const ITEM_STYLE = { height: '1.25rem' }
+//
+// The strip is icons and counts only, so the chips sit as close as they can
+// while still reading as separate targets.
+const ITEM_STYLE = {
+  alignItems: 'center',
+  display: 'inline-flex',
+  fontSize: '0.6875rem',
+  gap: '0.1875rem',
+  height: '1.25rem',
+  padding: '0 0.25rem'
+}
 const STRIP_STYLE = {
   display: 'inline-flex',
   flexDirection: 'row',
   alignItems: 'center',
   whiteSpace: 'nowrap',
-  gap: '0.5rem'
+  gap: '0.125rem'
 }
 const SEPARATOR_STYLE = {
   width: '1px',
@@ -147,7 +171,6 @@ const SEPARATOR_STYLE = {
 }
 const DOT_STYLE = { width: '0.375rem', height: '0.375rem', flex: '0 0 auto', borderRadius: '999px' }
 const LABEL_COLOR = 'var(--ui-text-quaternary)'
-const COUNT_COLOR = 'var(--ui-text-secondary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
 
 const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw' }
@@ -159,8 +182,9 @@ const POPOVER_BODY_STYLE = {
 }
 const POPOVER_NOTE_STYLE = { padding: '0.375rem', color: QUIET_COLOR, fontSize: '0.6875rem' }
 
-// One entry per group: the chip's color and the popover's dot color, so a red
-// count opens a red-dotted list.
+// One entry per group, keyed by the backend's own group name: the chip's color
+// and the popover's dot color, so a red count opens a red-dotted list. The word
+// lives in the panel header, never on the chip.
 const GROUPS = {
   blocked: { dot: RED, label: 'blocked', tone: 'bad' },
   waiting: { dot: AMBER, label: 'waiting', tone: 'warn' },
@@ -168,7 +192,7 @@ const GROUPS = {
   queued: { dot: LABEL_COLOR, label: 'queued', tone: 'muted' },
   scheduled: { dot: LABEL_COLOR, label: 'scheduled', tone: 'muted' },
   review: { dot: AMBER, label: 'review', tone: 'warn' },
-  done: { dot: GREEN, label: 'done today', tone: 'good' }
+  done_today: { dot: GREEN, label: 'done today', tone: 'good' }
 }
 
 // -- pure helpers -------------------------------------------------------------
@@ -341,13 +365,12 @@ function PopoverBody({ cards, error, group, loading, now, onOpen, total }) {
  * enter/leave pair on BOTH halves keeps it open across the gap between them.
  * Focus opens it too, so the list is reachable from the keyboard.
  */
-function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel, showDot }) {
+function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot }) {
   const spec = GROUPS[group] ?? GROUPS.queued
   const open = useValue($openSlot) === slot
   const { cards, error, loading, total } = useCards(ctx, group, open)
 
   const show = () => openSlot(slot)
-  const hide = closeSlotSoon
 
   const openBoard = () => {
     closeSlot(slot)
@@ -362,17 +385,17 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel,
   if (showDot) children.push(jsx('span', { className: 'shrink-0', style: { ...DOT_STYLE, backgroundColor: tone ?? GREEN } }))
   else if (icon) children.push(icon)
   children.push(jsx('span', { className: 'tabular-nums font-medium', style: { color: tone }, children: String(count) }))
-  if (label) children.push(jsx('span', { style: { color: toneLabel ?? LABEL_COLOR }, children: label }))
 
   const trigger = jsx('button', {
     'aria-label': `${label ?? group}: ${plural(count, 'card')}`,
     className: ITEM_CLASS,
     'data-hwm-slot': slot,
-    onBlur: hide,
+    onBlur: releaseSlot,
     onClick: openBoard,
     onFocus: show,
     onPointerEnter: show,
-    onPointerLeave: hide,
+    onPointerLeave: releaseSlot,
+    onPointerMove: markInside,
     style: ITEM_STYLE,
     type: 'button',
     children
@@ -384,8 +407,9 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel,
     onOpenAutoFocus: event => event.preventDefault(),
     // HOLD, never take: the panel keeps itself open while the pointer is on it,
     // but it cannot pull the slot back from the chip the pointer just moved to.
-    onPointerEnter: cancelClose,
-    onPointerLeave: hide,
+    onPointerEnter: markInside,
+    onPointerLeave: releaseSlot,
+    onPointerMove: markInside,
     side: 'top',
     sideOffset: 8,
     style: POPOVER_STYLE,
@@ -468,8 +492,7 @@ function WorkerStrip({ ctx }) {
         group: 'blocked',
         icon: jsx(icons.AlertTriangle, { className: 'shrink-0 size-3.5' }),
         label: 'blocked',
-        tone: RED,
-        toneLabel: RED
+        tone: RED
       })
     )
   }
@@ -499,8 +522,7 @@ function WorkerStrip({ ctx }) {
         group: 'running',
         label: 'running',
         showDot: true,
-        tone: stateColor(workers.state),
-        toneLabel: COUNT_COLOR
+        tone: stateColor(workers.state)
       })
     )
   }
@@ -555,11 +577,11 @@ function WorkerStrip({ ctx }) {
   if (groups.doneToday > 0) {
     items.push(
       jsx(CountWithCards, {
-        key: 'done',
-        slot: 'done',
+        key: 'done_today',
+        slot: 'done_today',
         ctx,
         count: groups.doneToday,
-        group: 'done',
+        group: 'done_today',
         icon: jsx(icons.CheckCircle2, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'done today',
         tone: QUIET_COLOR
@@ -587,10 +609,11 @@ function WorkerStrip({ ctx }) {
   // handler alone loses the race whenever a panel sits over a neighbouring
   // chip: the pointer never reaches that chip, so the old panel stays up.
   return jsx('span', {
-    onPointerLeave: closeSlotSoon,
+    onPointerLeave: releaseSlot,
     onPointerMove: event => {
       const slot = slotUnder(event)
       if (slot) openSlot(slot)
+      else markInside()
     },
     style: STRIP_STYLE,
     children: items

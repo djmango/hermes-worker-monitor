@@ -233,8 +233,29 @@ def test_only_one_count_popover_can_be_open():
     assert "useState" not in source
     assert "data-hwm-slot" in source
     assert "onPointerMove: event => {" in source
-    assert "onPointerEnter: cancelClose" in source
+    assert "onPointerEnter: markInside" in source
     assert source.count("slot: '") == source.count("jsx(CountWithCards, {")
+
+
+def test_a_chip_is_an_icon_and_a_count_whose_slot_the_backend_answers():
+    """The word lives in the panel header, and every slot is a real group.
+
+    The desktop half asked for the group `done` while the backend only knows
+    `done_today`, so that one panel answered 400 and showed no cards. The slot
+    and the group it asks for are the backend's own names.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    # No chip renders its label as text; the count is the only text on it.
+    assert "children: label" not in source
+    for group in plugin_api.GROUP_ORDER:
+        assert f"slot: '{group}'," in source, group
+        assert f"group: '{group}'," in source, group
+    assert "done_today: { dot: GREEN" in source
+    # The old names must not come back.
+    assert "slot: 'done'," not in source
+    assert "group: 'done'," not in source
 
 
 def test_the_desktop_half_renders_its_components_instead_of_calling_them():

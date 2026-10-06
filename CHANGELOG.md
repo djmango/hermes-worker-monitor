@@ -12,7 +12,10 @@
 - A backend that predates the route answers 404, and the popover says so in one line instead of showing an empty list.
 - Fixed before the release: the strip rendered its count chips by calling the component as a plain function, so React threw (minified error `#300`) the moment the group set changed and the footer item disappeared. The chips are rendered through `jsx(...)` now, and a test fails if a hook-owning component is called that way again.
 - One panel at a time, and the chip under the pointer always wins it. Each chip used to hold its own open flag, so moving across the footer left a row of panels up; then the panel claimed the slot back whenever the pointer crossed it, so the group you had left stayed on screen. The slot is shared now, the strip decides it from the pointer, and a panel only ever holds its own. A test fails if a chip grows a private flag again.
-- Tests: 32.
+- The chip is an icon and a count, nothing else, and the chips sit close together. The group's name moved into the panel header, where there is room for it.
+- Fixed: the `done today` panel never listed its cards. The desktop half asked for the group `done`, and the backend knows only `done_today`, so it answered 400. A test now pins every chip's slot and group to a name the backend answers.
+- The panel is reachable with the mouse. The pointer can travel from a chip onto the panel and click a card, and the close timer is a heartbeat rather than a countdown, so a slow path onto the panel cannot close it.
+- Tests: 33.
 
 ## 0.2.1
 
