@@ -5,10 +5,12 @@
  * running count carries a state dot, colored by the worst running worker
  * (looping beats stalled beats active).
  *
- * Hovering a count opens a popover with the cards behind that number. The rows
- * are the app's own panel list row (PanelListRow) with PanelPill and
- * PanelSectionLabel, so a card reads here the way it reads in the app's Kanban
- * list and the two cannot drift. Clicking a count, or a card, opens the board.
+ * Hovering a count opens a popover with the cards behind that number. Only one
+ * panel is ever open: every chip shares one open slot, so moving across the
+ * strip closes the panel behind you. The rows are the app's own panel list row
+ * (PanelListRow) with PanelPill and PanelSectionLabel, so a card reads here the
+ * way it reads in the app's Kanban list and the two cannot drift. Clicking a
+ * count, or a card, opens the board.
  *
  * This fork reads counts and card titles only. There is no quota item, so the
  * desktop half never asks the backend for provider data and no credential
@@ -32,11 +34,13 @@ import {
   PopoverContent,
   PopoverTrigger,
   STATUSBAR_AREAS,
+  atom,
   host,
   icons,
-  useQuery
+  useQuery,
+  useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-worker-monitor'
@@ -55,6 +59,46 @@ const CARD_LIMIT = 25
 // How long the panel survives the pointer leaving the chip. Without a grace
 // period, the gap between the chip and the panel closes it on the way in.
 const HOVER_CLOSE_MS = 140
+
+// ONE popover at a time. Every chip reports into this shared slot, so opening
+// one closes the one before it instead of leaving a row of panels open across
+// the footer. The timer lives here too: a per-chip timer could still fire after
+// another chip took the slot.
+const $openSlot = atom(null)
+let closeTimer = null
+
+function cancelClose() {
+  if (closeTimer !== null) {
+    clearTimeout(closeTimer)
+    closeTimer = null
+  }
+}
+
+/** Take the slot for `slot`, closing whatever was open. */
+function openSlot(slot) {
+  cancelClose()
+  if ($openSlot.get() !== slot) $openSlot.set(slot)
+}
+
+/** Release `slot` after the grace period, so the pointer can reach the panel. */
+function closeSlotSoon(slot) {
+  cancelClose()
+  closeTimer = setTimeout(() => {
+    closeTimer = null
+    if ($openSlot.get() === slot) $openSlot.set(null)
+  }, HOVER_CLOSE_MS)
+}
+
+/** Release `slot` now: escape, an outside click, or a board navigation. */
+function closeSlot(slot) {
+  cancelClose()
+  if ($openSlot.get() === slot) $openSlot.set(null)
+}
+
+function closeAnySlot() {
+  cancelClose()
+  if ($openSlot.get() !== null) $openSlot.set(null)
+}
 
 // Traffic-light colors for the running state. Mid-saturation hues that stay
 // legible on both the light and dark themes.
@@ -277,37 +321,21 @@ function PopoverBody({ cards, error, group, loading, now, onOpen, total }) {
 }
 
 /**
- * A count chip that opens its cards on hover. Radix opens the panel from the
- * trigger, and the enter/leave pair on BOTH halves keeps it open across the gap
- * between them. Focus opens it too, so the list is reachable from the keyboard.
+ * A count chip that opens its cards on hover. The open slot is shared, so only
+ * one panel is ever up. Radix opens the panel from the trigger, and the
+ * enter/leave pair on BOTH halves keeps it open across the gap between them.
+ * Focus opens it too, so the list is reachable from the keyboard.
  */
-function CountWithCards({ ctx, count, group, icon, label, tone, toneLabel, showDot }) {
+function CountWithCards({ ctx, count, group, icon, label, slot, tone, toneLabel, showDot }) {
   const spec = GROUPS[group] ?? GROUPS.queued
-  const [open, setOpen] = useState(false)
-  const closeTimer = useRef(null)
+  const open = useValue($openSlot) === slot
   const { cards, error, loading, total } = useCards(ctx, group, open)
 
-  const cancelClose = () => {
-    if (closeTimer.current !== null) {
-      clearTimeout(closeTimer.current)
-      closeTimer.current = null
-    }
-  }
-
-  const show = () => {
-    cancelClose()
-    setOpen(true)
-  }
-
-  const hide = () => {
-    cancelClose()
-    closeTimer.current = setTimeout(() => setOpen(false), HOVER_CLOSE_MS)
-  }
-
-  useEffect(() => cancelClose, [])
+  const show = () => openSlot(slot)
+  const hide = () => closeSlotSoon(slot)
 
   const openBoard = () => {
-    setOpen(false)
+    closeSlot(slot)
     try {
       host.navigate(BOARD_PATH)
     } catch {
@@ -367,7 +395,9 @@ function CountWithCards({ ctx, count, group, icon, label, tone, toneLabel, showD
   })
 
   return jsxs(Popover, {
-    onOpenChange: setOpen,
+    onOpenChange: next => {
+      if (!next) closeSlot(slot)
+    },
     open,
     children: [jsx(PopoverTrigger, { asChild: true, children: trigger }), open ? panel : null]
   })
@@ -376,6 +406,10 @@ function CountWithCards({ ctx, count, group, icon, label, tone, toneLabel, showD
 // -- the footer item ----------------------------------------------------------
 
 function WorkerStrip({ ctx }) {
+  // A slot left behind by a hot reload or a disable would open a panel on the
+  // next mount with no pointer over it.
+  useEffect(() => () => closeAnySlot(), [])
+
   const { data, error } = useSummary(ctx, '/summary', SUMMARY_INTERVAL_MS)
 
   const groups = readGroups(data)
@@ -410,6 +444,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'blocked',
+        slot: 'blocked',
         ctx,
         count: groups.blocked,
         group: 'blocked',
@@ -425,6 +460,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'waiting',
+        slot: 'waiting',
         ctx,
         count: groups.waiting,
         group: 'waiting',
@@ -439,6 +475,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'running',
+        slot: 'running',
         ctx,
         count: groups.running,
         group: 'running',
@@ -456,6 +493,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'queued',
+        slot: 'queued',
         ctx,
         count: groups.queued,
         group: 'queued',
@@ -470,6 +508,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'scheduled',
+        slot: 'scheduled',
         ctx,
         count: groups.scheduled,
         group: 'scheduled',
@@ -484,6 +523,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'review',
+        slot: 'review',
         ctx,
         count: groups.review,
         group: 'review',
@@ -498,6 +538,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'done',
+        slot: 'done',
         ctx,
         count: groups.doneToday,
         group: 'done',
@@ -513,6 +554,7 @@ function WorkerStrip({ ctx }) {
     items.push(
       jsx(CountWithCards, {
         key: 'idle',
+        slot: 'idle',
         ctx,
         count: 0,
         group: 'queued',

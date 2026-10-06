@@ -216,6 +216,22 @@ def test_module_reads_no_credentials_and_makes_no_network_calls():
         assert forbidden not in source, f"unexpected reference to {forbidden!r} in plugin_api.py"
 
 
+def test_only_one_count_popover_can_be_open():
+    """One shared open slot, not per-chip state.
+
+    Each chip used to own its open flag, so hovering across the footer left a
+    row of panels open. The slot is shared now, and a chip must not carry its
+    own flag back in.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "const $openSlot = atom(" in source
+    assert "useValue($openSlot)" in source
+    assert "useState" not in source
+    assert source.count("slot: '") == source.count("jsx(CountWithCards, {")
+
+
 def test_the_desktop_half_renders_its_components_instead_of_calling_them():
     """A component that owns hooks must be RENDERED, not called as a function.
 

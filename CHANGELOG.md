@@ -11,7 +11,8 @@
 - `/cards` is uncached on purpose: it answers a hover, and a list stale enough to disagree with the live count beside it reads as a fault.
 - A backend that predates the route answers 404, and the popover says so in one line instead of showing an empty list.
 - Fixed before the release: the strip rendered its count chips by calling the component as a plain function, so React threw (minified error `#300`) the moment the group set changed and the footer item disappeared. The chips are rendered through `jsx(...)` now, and a test fails if a hook-owning component is called that way again.
-- Tests: 31.
+- One panel at a time. Each chip used to hold its own open flag, so moving across the footer left a row of panels up. Every chip now shares one open slot, and a test fails if a chip grows a private flag again.
+- Tests: 32.
 
 ## 0.2.1
 
