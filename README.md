@@ -11,6 +11,8 @@ One compact strip on the right side of the Desktop footer:
 - Cards that stopped and need a person come first, in red.
 - The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.
 - Hover any count for the cards behind it: a list of that group's cards, each row with the card's dot, title, id, and age. The rows are the app's own list row from the Desktop plugin SDK, so the footer and the Kanban page cannot drift apart.
+- Hover a card in that list for the whole card beside it: the title and its pills, the fields, the description as markdown, the newest run, the recent comments, and the attachments. It is the same set the board's own drawer shows, built from the app's own panel parts and the chat markdown renderer. Read-only: the actions stay one click away in the drawer, because a desktop plugin cannot reach the Kanban plugin's own API.
+- Both panels stay up while the pointer is on them, so the pointer can travel from a chip onto a list, and from a row onto the card, without either closing. The grace is 700ms.
 - Click any count, or any card in the list, to open the Kanban board page inside the app. There is no menu to open and no second screen to read.
 - A group with no cards is left out, so the strip stays short. A quiet board shows the queue, or `idle`.
 
@@ -29,20 +31,23 @@ Removed:
 
 What is left:
 
-- Two routes on the local backend: `GET /summary` for the strip, and `GET /cards` for the list a count opens.
+- Three routes on the local backend: `GET /summary` for the strip, `GET /cards` for the list a count opens, and `GET /card` for the card a hovered row opens.
 - Read-only SQLite access to `kanban.db`, plus each profile's `state.db` for worker activity.
 - `GET /summary` is counts only. The payload carries group counts and the count of active, stalled, and looping workers. No card identifier, title, assignee, or tool argument is in it.
-- `GET /cards` returns the cards of the one group that was asked for, and only the fields a row draws: id, title, status, assignee, priority, blocked reason, and the created, started, and completed timestamps. The card body never leaves the database, and titles are capped at 200 characters.
+- `GET /cards` returns the cards of the one group that was asked for, and only the fields a row draws: id, title, status, assignee, priority, blocked reason, and the created, started, and completed timestamps. Titles are capped at 200 characters.
+- `GET /card` returns the one card that was asked for, the way the drawer shows it: its fields, its description (capped at 6000 characters), its result, its last failure, its newest run, its three newest comments (each capped at 500 characters), and the names of up to ten attachments. Nothing else on the board is read for it.
 - Worker activity metadata inside the backend: tool name, a 16-character SHA-256 hash of the arguments, and a timestamp, used for stall and loop detection.
 
 Counted, against upstream v0.2.2:
 
 | | Upstream | This fork |
 |---|---|---|
-| Product lines (backend + desktop) | 1,488 | 1,111 |
-| Backend (`dashboard/`) | 682 | 578 |
-| Desktop (`desktop/plugin.js`) | 796 | 533 |
-| Tests | 838 | 522 |
+| Product lines (backend + desktop) | 1,488 | 1,688 |
+| Backend (`dashboard/`) | 682 | 726 |
+| Desktop (`desktop/plugin.js`) | 796 | 962 |
+| Tests | 838 | 714 |
+
+The comparison is against the fork at 0.2.1. The hover preview and `GET /card` are additions upstream has no counterpart for, so this fork is no longer the smaller of the two.
 
 ## Trust surface
 
@@ -95,7 +100,7 @@ Activity comes from the worker's own session store. A named profile keeps its se
 
 ## Privacy
 
-The backend opens the local databases in read-only mode and writes nothing. `GET /summary` returns counts only. `GET /cards` returns the cards of the one group that was asked for, with the fields a row draws and no card body, and it is answered only to the app that asked. Message content and tool arguments never leave the backend, and arguments are represented by hashes for the stall and loop test.
+The backend opens the local databases in read-only mode and writes nothing. `GET /summary` returns counts only. `GET /cards` returns the cards of the one group that was asked for, and `GET /card` returns the one card a row was hovered on, description included. Both card routes answer only to the app that asked, over the same authenticated channel as every other route, and they are the only ones that carry card text. Message content and tool arguments never leave the backend, and arguments are represented by hashes for the stall and loop test.
 
 ## Development
 

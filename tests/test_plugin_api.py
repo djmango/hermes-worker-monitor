@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -48,7 +49,7 @@ def _board(path: Path, rows, *, old_schema=False) -> None:
 
 def test_routes_are_relative_and_registered():
     paths = {route.path for route in plugin_api.router.routes}
-    assert paths == {"/summary", "/cards"}
+    assert paths == {"/summary", "/cards", "/card"}
 
 
 def test_sqlite_connections_are_enforced_read_only():
@@ -216,25 +217,40 @@ def test_module_reads_no_credentials_and_makes_no_network_calls():
         assert forbidden not in source, f"unexpected reference to {forbidden!r} in plugin_api.py"
 
 
-def test_only_one_count_popover_can_be_open():
-    """One shared open slot, and the chip under the pointer always wins it.
+def test_only_one_panel_of_each_kind_can_be_open():
+    """One shared hover, for the chip and for the card row under it.
 
     Each chip used to own its open flag, so hovering across the footer left a
-    row of panels up. Then the panel took the slot back whenever the pointer
-    crossed it, so the group the pointer had already left stayed on screen.
-    The slot is shared, the strip decides it from the pointer, and a panel only
-    holds its own.
+    row of panels up. Then a panel took the slot back whenever the pointer
+    crossed it, so the group the pointer had already left stayed on screen. Both
+    the chip and the card row report into one shared hover now.
     """
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
-    assert "const $openSlot = atom(" in source
-    assert "useValue($openSlot) === slot" in source
+    assert "const $hover = atom(" in source
+    assert "useValue($hover)" in source
     assert "useState" not in source
     assert "data-hwm-slot" in source
+    # The card row is a hover layer of its own, keyed by the card.
+    assert "data-hwm-card" in source
     assert "onPointerMove: event => {" in source
     assert "onPointerEnter: markInside" in source
     assert source.count("slot: '") == source.count("jsx(CountWithCards, {")
+
+
+def test_the_hover_grace_is_long_enough_to_reach_a_panel():
+    """The pointer has to be able to travel onto the panel it just opened.
+
+    A short countdown loses that race, which is what made the panel feel hard to
+    catch. A test fails if the grace is cut back to a knife's edge.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const HOVER_CLOSE_MS = (\d[\d_]*)", source)
+    assert match, "no hover grace in the desktop half"
+    assert int(match.group(1).replace("_", "")) >= 400
 
 
 def test_a_chip_is_an_icon_and_a_count_whose_slot_the_backend_answers():
@@ -247,8 +263,10 @@ def test_a_chip_is_an_icon_and_a_count_whose_slot_the_backend_answers():
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
-    # No chip renders its label as text; the count is the only text on it.
-    assert "children: label" not in source
+    # No chip renders its label as text: the count is the only text on it. The
+    # label text carried its own tone prop, which is gone with it.
+    assert "toneLabel" not in source
+    assert "jsx('span', { style: { color: QUIET_COLOR }, children: label })" not in source
     for group in plugin_api.GROUP_ORDER:
         assert f"slot: '{group}'," in source, group
         assert f"group: '{group}'," in source, group
@@ -268,7 +286,7 @@ def test_the_desktop_half_renders_its_components_instead_of_calling_them():
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
-    for component in ("CardRow", "CountWithCards", "PopoverBody"):
+    for component in ("CardPreview", "CardRow", "CountWithCards", "PopoverBody", "Section"):
         call = f"{component}({{"
         definition = f"function {component}({{"
         assert source.count(call) == source.count(definition), f"{component} is called as a plain function"
@@ -414,6 +432,121 @@ def test_the_cards_route_bounds_its_page_by_default():
     parameter = inspect.signature(plugin_api.get_cards).parameters["limit"]
     assert parameter.default.default == 25
     assert any(getattr(constraint, "le", None) == 50 for constraint in parameter.default.metadata)
+
+
+# -- the whole card behind one row -------------------------------------------
+
+DETAIL_SCHEMA = """
+CREATE TABLE task_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, profile TEXT, status TEXT,
+  started_at INTEGER, ended_at INTEGER, outcome TEXT, summary TEXT, error TEXT
+);
+CREATE TABLE task_comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER
+);
+CREATE TABLE task_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, filename TEXT, stored_path TEXT, created_at INTEGER
+);
+"""
+
+
+def _detail_board(root: Path) -> None:
+    with sqlite3.connect(root / "kanban.db") as connection:
+        connection.execute(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, body TEXT, status TEXT, assignee TEXT, "
+            "priority INTEGER, started_at INTEGER, completed_at INTEGER, block_kind TEXT, result TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO tasks VALUES ('t_blocked', 'Needs a person', 'the whole brief', 'blocked', "
+            "'default', 5, ?, NULL, 'needs_input', NULL)",
+            (NOW,),
+        )
+        connection.executescript(DETAIL_SCHEMA)
+        connection.execute(
+            "INSERT INTO task_runs (task_id, status, started_at, ended_at, outcome, summary) "
+            "VALUES ('t_blocked', 'blocked', ?, ?, 'blocked', 'stopped for input')",
+            (NOW, NOW + 60),
+        )
+        for index in range(4):
+            connection.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES ('t_blocked', 'skg', ?, ?)",
+                (f"comment {index}", NOW + index),
+            )
+        connection.execute(
+            "INSERT INTO task_attachments (task_id, filename, stored_path, created_at) "
+            "VALUES ('t_blocked', 'notes.txt', '/tmp/notes.txt', ?)",
+            (NOW,),
+        )
+
+
+def test_the_card_preview_returns_one_card_with_its_run_comments_and_attachments():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _detail_board(root)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            payload = plugin_api._load_card_payload("t_blocked")
+            assert payload is not None
+            missing = plugin_api._load_card_payload("t_nope")
+            injected = plugin_api._load_card_payload("t_blocked' OR 1=1 --")
+
+    card = payload["card"]
+    assert card["id"] == "t_blocked"
+    assert card["title"] == "Needs a person"
+    assert card["body"] == "the whole brief"
+    assert card["block_kind"] == "needs_input"
+    assert card["priority"] == 5
+    assert payload["run"]["outcome"] == "blocked"
+    assert payload["run"]["summary"] == "stopped for input"
+    assert payload["comments"]["count"] == 4
+    # The three newest, oldest first, so the preview reads downward in time.
+    assert [item["body"] for item in payload["comments"]["recent"]] == ["comment 1", "comment 2", "comment 3"]
+    assert payload["attachments"] == {"count": 1, "names": ["notes.txt"]}
+    assert missing is None
+    # A quoted id is data, never SQL.
+    assert injected is None
+
+
+def test_the_card_preview_clips_runaway_text():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _detail_board(root)
+        with sqlite3.connect(root / "kanban.db") as connection:
+            connection.execute("UPDATE tasks SET body = ?", ("x" * (plugin_api._BODY_CAP + 500),))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            payload = plugin_api._load_card_payload("t_blocked")
+
+    assert payload is not None
+    assert len(payload["card"]["body"]) == plugin_api._BODY_CAP
+
+
+def test_a_board_without_the_run_and_comment_tables_still_answers():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _board(root / "kanban.db", [("t_blocked", "Needs a person", "blocked", "default", NOW, None, "needs_input")])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            payload = plugin_api._load_card_payload("t_blocked")
+
+    assert payload is not None
+    assert payload["card"]["id"] == "t_blocked"
+    assert payload["run"] is None
+    assert payload["comments"]["count"] == 0
+    assert payload["attachments"]["names"] == []
+
+
+def test_the_card_route_refuses_a_card_that_is_not_there():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _detail_board(root)
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}, clear=True):
+            try:
+                asyncio.run(plugin_api.get_card(id="t_nope"))
+            except HTTPException as error:
+                assert error.status_code == 404
+            else:
+                raise AssertionError("a missing card was accepted")
 
 
 def load_tests(loader, tests, pattern):

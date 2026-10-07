@@ -1,15 +1,18 @@
 """Hermes Worker Monitor dashboard API.
 
-Two read-only routes. ``/summary`` is the one payload the footer strip reads:
+Three read-only routes. ``/summary`` is the one payload the footer strip reads:
 the Kanban group counts and the health of the running workers. ``/cards``
-returns the cards behind ONE group, for the popover a count opens. Both open the
-local Kanban and worker session databases read-only. This fork reads no
+returns the cards behind ONE group, for the popover a count opens. ``/card``
+returns ONE card in full, for the preview a hovered card row opens. All three
+open the local Kanban and worker session databases read-only. This fork reads no
 credentials, makes no network calls, and writes nothing.
 
-``/cards`` is the only route that returns card identifiers, titles, and
-assignees, and only for the group that was asked for. It is deliberately
-uncached: it answers a hover, and a stale list under a live count would read as
-a fault.
+The card routes are the only ones that carry card text, and each answers for the
+one group or the one card that was asked for: identifiers, titles, assignees, the
+body of that single card, its newest run, and its recent comments. The database
+is still the only place a card's arguments live. None of them is cached: they
+answer a hover, and a list or a body stale enough to disagree with the live
+count beside it reads as a fault.
 """
 
 from __future__ import annotations
@@ -286,6 +289,138 @@ def _build_cards_payload(group: str, limit: int) -> dict[str, Any]:
     }
 
 
+# -- one card's detail --------------------------------------------------------
+
+# Caps on the free text one preview may carry. The panel shows ONE card, so a
+# whole body can ship; a runaway value cannot.
+_BODY_CAP = 6000
+_RESULT_CAP = 2000
+_ERROR_CAP = 800
+_COMMENT_CAP = 500
+_RECENT_COMMENTS = 3
+_ATTACHMENT_NAMES = 10
+
+# What a preview draws, plus the fields it can do without.
+_CARD_DETAIL_FIELDS = (
+    "assignee",
+    "block_kind",
+    "block_recurrences",
+    "body",
+    "branch_name",
+    "completed_at",
+    "completion_contract",
+    "consecutive_failures",
+    "created_at",
+    "created_by",
+    "goal_mode",
+    "id",
+    "last_failure_error",
+    "max_retries",
+    "model_override",
+    "priority",
+    "project_id",
+    "provider_override",
+    "result",
+    "session_id",
+    "started_at",
+    "status",
+    "tenant",
+    "title",
+    "workspace_kind",
+    "workspace_path",
+)
+
+
+def _clip(value: Any, cap: int) -> Any:
+    """Trim long free text. The row keeps its type."""
+    if isinstance(value, str) and len(value) > cap:
+        return value[:cap]
+    return value
+
+
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def _load_card_payload(card_id: str) -> dict[str, Any] | None:
+    """One card in full, plus its newest run, its recent comments and its
+    attachments. The board's own drawer shows the same three, and a hovered row
+    opens this instead of leaving the page."""
+    with closing(_readonly_connection(_kanban_database())) as connection:
+        tables = _table_names(connection)
+        columns = _task_columns(connection)
+        fields = [field for field in _CARD_DETAIL_FIELDS if field in columns]
+        if "tasks" not in tables or not fields:
+            return None
+
+        row = connection.execute(
+            f"SELECT {', '.join(fields)} FROM tasks WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        card = dict(zip(fields, row))
+        card["body"] = _clip(card.get("body"), _BODY_CAP)
+        card["result"] = _clip(card.get("result"), _RESULT_CAP)
+        card["last_failure_error"] = _clip(card.get("last_failure_error"), _ERROR_CAP)
+
+        run: dict[str, Any] | None = None
+        if "task_runs" in tables:
+            run_columns = {str(info[1]) for info in connection.execute("PRAGMA table_info(task_runs)")}
+            run_fields = [
+                name
+                for name in ("status", "outcome", "profile", "started_at", "ended_at", "summary", "error")
+                if name in run_columns
+            ]
+            if run_fields:
+                run_row = connection.execute(
+                    f"SELECT {', '.join(run_fields)} FROM task_runs WHERE task_id = ? "
+                    "ORDER BY started_at DESC, id DESC LIMIT 1",
+                    (card_id,),
+                ).fetchone()
+                if run_row is not None:
+                    run = dict(zip(run_fields, run_row))
+                    run["summary"] = _clip(run.get("summary"), _ERROR_CAP)
+                    run["error"] = _clip(run.get("error"), _ERROR_CAP)
+
+        comments: dict[str, Any] = {"count": 0, "recent": []}
+        if "task_comments" in tables:
+            comments["count"] = int(
+                connection.execute("SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (card_id,)).fetchone()[0]
+            )
+            recent = connection.execute(
+                "SELECT author, body, created_at FROM task_comments WHERE task_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (card_id, _RECENT_COMMENTS),
+            ).fetchall()
+            comments["recent"] = [
+                {"author": str(item[0] or ""), "body": _clip(item[1], _COMMENT_CAP), "created_at": item[2]}
+                for item in reversed(recent)
+            ]
+
+        attachments: dict[str, Any] = {"count": 0, "names": []}
+        if "task_attachments" in tables:
+            attachments["count"] = int(
+                connection.execute("SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (card_id,)).fetchone()[0]
+            )
+            attachments["names"] = [
+                str(item[0])
+                for item in connection.execute(
+                    "SELECT filename FROM task_attachments WHERE task_id = ? ORDER BY created_at, id LIMIT ?",
+                    (card_id, _ATTACHMENT_NAMES),
+                ).fetchall()
+            ]
+
+    return {
+        "generated_at": int(time.time()),
+        "card": card,
+        "run": run,
+        "comments": comments,
+        "attachments": attachments,
+    }
+
+
 def _profile_databases(assignee: str) -> list[Path]:
     """Candidate read-only stores for *assignee*, most specific first.
 
@@ -401,3 +536,16 @@ async def get_cards(
     if group not in GROUP_ORDER:
         raise HTTPException(status_code=400, detail=f"Unknown group: {group}")
     return await asyncio.to_thread(_build_cards_payload, group, limit)
+
+
+@router.get("/card")
+async def get_card(id: str = Query(..., min_length=1, max_length=200)) -> dict[str, Any]:
+    """One card in full, for the preview a hovered card row opens.
+
+    Also uncached: it answers a hover, and the drawer it stands in for would
+    never show a stale body either.
+    """
+    payload = await asyncio.to_thread(_load_card_payload, id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No such card")
+    return payload
