@@ -14,11 +14,13 @@
 - One panel at a time, and the chip under the pointer always wins it. Each chip used to hold its own open flag, so moving across the footer left a row of panels up; then the panel claimed the slot back whenever the pointer crossed it, so the group you had left stayed on screen. The slot is shared now, the strip decides it from the pointer, and a panel only ever holds its own. A test fails if a chip grows a private flag again.
 - The chip is an icon and a count, nothing else, and the chips sit close together. The group's name moved into the panel header, where there is room for it.
 - Fixed: the `done today` panel never listed its cards. The desktop half asked for the group `done`, and the backend knows only `done_today`, so it answered 400. A test now pins every chip's slot and group to a name the backend answers.
-- The panel is reachable with the mouse. The pointer can travel from a chip onto the panel and click a card, and the close timer is a heartbeat rather than a countdown, so a slow path onto the panel cannot close it. The grace period is 700ms and the panels sit 6px from what they are anchored to.
-- Hovering a card now opens the whole card beside it, the way the board's drawer shows it: the title and its pills, the fields, the description as markdown, the newest run, the three recent comments and the attachments. It is built from the app's own panel parts and the chat markdown renderer, with the raw text in a code block as the fallback if that renderer cannot mount in a popover. Read-only: a desktop plugin cannot reach the Kanban plugin's own API, so the actions stay in the drawer, one click away.
+- The list and the card are reachable with the mouse. The pointer can travel from a chip onto the list and from a row onto the card, and the close timer is a heartbeat rather than a countdown, so a slow path cannot close what the pointer is heading for.
+- The card is a centered overlay over the whole app, not a panel hanging off the row: a fixed, large target in the middle of the screen, drawn with the app's own dialog shell (title, description, footer and close button included). A panel that follows its row is a small moving target that can land off screen or behind the list, which made reaching it a race.
+- A card opens after a 130ms rest on a row, so sweeping the list does not flash a full screen overlay at every row it crosses. The overlay replaces the previous card rather than stacking.
+- The hover grace is 1000ms, because the journey from the list to the middle of the screen is the long one.
 - New backend route `GET /card?id=<task id>`. It returns the one card that was asked for, its newest run, its three newest comments and its attachment names, with the free text capped. An unknown id answers 404, and a quoted id is data, never SQL.
-- One hover drives both layers, so a card panel closes when the pointer leaves it for the list header, and the list closes when the pointer leaves the strip.
-- Tests: 38.
+- One hover drives both layers, so the card overlay and the list go up and down together, and the card follows the row under the pointer instead of piling up.
+- Tests: 40.
 
 ## 0.2.1
 

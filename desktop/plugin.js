@@ -6,21 +6,28 @@
  * (looping beats stalled beats active).
  *
  * Hovering a count opens a popover with the cards behind that number. Hovering
- * one of those rows opens a second panel beside it holding the whole card: the
- * description, the metadata, the newest run, the recent comments and the
- * attachments, which is what the board's own drawer shows. Both panels are made
- * of the app's own parts (PanelListRow, PanelPill, PanelSectionLabel, PanelMeta,
- * PanelBlock and the chat markdown renderer), so a card reads here the way it
- * reads on the Kanban page and the two cannot drift.
+ * one of those rows opens the whole card in a centered overlay over the app, the
+ * way a fuzzy finder floats in the middle of the screen: the title, the fields,
+ * the description, the newest run, the recent comments and the attachments,
+ * which is what the board's own drawer shows. It is the app's own dialog shell,
+ * the app's own panel parts and the app's own chat markdown renderer, so a card
+ * reads here the way it reads on the Kanban page and the two cannot drift.
  *
- * Only one of each is up at a time, and both stay up while the pointer is on
- * them, so a card can be read and clicked without leaving the page. Clicking a
- * count, or a card, opens the board. The card panels are read-only: a plugin
- * cannot reach the Kanban plugin's own API, so the actions (complete, block,
- * comment, attach) still live in the board's drawer.
+ * Nothing here needs a precise pointer. The card opens after a short rest on a
+ * row, and both layers stay up while the pointer is on any of our chrome (the
+ * strip, the list, the card overlay), with a heartbeat rather than a countdown
+ * as the close timer. A pointer in the gap between the list and the overlay is
+ * mid journey, not gone, and the overlay is a large fixed target in the middle
+ * of the screen instead of a small box wedged against a row.
+ *
+ * Clicking a count, or a card in a list, opens the board. Escape, a click
+ * outside, or the close button dismisses the card. The card overlay is
+ * read-only: a plugin cannot reach the Kanban plugin's own API, so the actions
+ * (complete, block, comment, attach) still live in the board's drawer, one click
+ * away.
  *
  * A chip is an icon and a count, nothing else: the group's name lives in the
- * panel header, and the chips sit close together.
+ * list header, and the chips sit close together.
  *
  * This fork reads counts, card fields and the one card's body. There is no quota
  * item, so the desktop half never asks the backend for provider data and no
@@ -30,8 +37,8 @@
  * plugin contract) with React Query `refetchInterval`, so the timer is torn
  * down automatically when the item unmounts and the plugin is disabled or
  * hot-reloaded. A failed request never leaves stale numbers on screen. The card
- * list is fetched only while its panel is open, and one card's detail only while
- * its row is hovered.
+ * list is fetched only while its popover is open, and one card's detail only
+ * while it is the card on show.
  *
  * Plain ESM, loaded uncompiled: the UI is `jsx()` calls, not JSX syntax. Only
  * `@hermes/plugin-sdk`, `react`, and `react/jsx-runtime` resolve.
@@ -39,6 +46,11 @@
 
 import {
   Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogTitle,
   MessageTextContent,
   PanelBlock,
   PanelListRow,
@@ -66,21 +78,25 @@ const BOARD_PATH = '/kanban'
 // Polling cadence (ms). Never below 10s.
 const SUMMARY_INTERVAL_MS = 10_000
 
-// Cards requested per panel. The header always shows the group's real total
-// from the same payload the strip counts, so a capped list never reads as the
-// whole board.
+// Cards requested per list. The header always shows the group's real total from
+// the same payload the strip counts, so a capped list never reads as the whole
+// board.
 const CARD_LIMIT = 25
 
-// How long a panel waits for the pointer to reach it. The timer is a heartbeat,
-// not a countdown: while pointer events keep arriving on a chip, the strip, a
-// panel or the strip's own panel, the hover stays, however slow the path is.
-// The panel sits one small gap away, and a pointer that crosses that gap is
-// mid-journey, not gone.
-const HOVER_CLOSE_MS = 700
+// How long the pointer must rest on a row before its card opens. A sweep across
+// the list must not flash a full screen overlay at every row it crosses.
+const CARD_OPEN_DWELL_MS = 130
 
-// ONE hover at a time: the open chip and, inside it, the row whose card panel is
-// up. Every part reports into this one atom, so moving anywhere else closes what
-// it left behind instead of leaving a row of panels across the screen.
+// How long a layer waits for the pointer to reach it. The timer is a heartbeat,
+// not a countdown: while pointer events keep arriving on our chrome, the hover
+// stays, however slow the path is. The card overlay is in the middle of the
+// screen and the list is in a corner, so that journey is the long one, and a
+// pointer crossing it is mid journey, not gone.
+const HOVER_CLOSE_MS = 1000
+
+// ONE hover at a time: the open chip and, inside it, the card on show. Every
+// part reports into this one atom, so moving anywhere else closes what it left
+// behind instead of leaving panels across the screen.
 const $hover = atom(null)
 let closeTimer = null
 let lastInsideAt = 0
@@ -102,7 +118,7 @@ function markInside() {
 function hoverSlot(slot) {
   markInside()
   const hover = $hover.get()
-  if (hover === null || hover.slot !== slot || hover.card !== null) {
+  if (hover === null || hover.slot !== slot) {
     $hover.set({ slot, card: null })
   }
 }
@@ -116,8 +132,9 @@ function hoverCard(slot, card) {
   }
 }
 
-/** Drop the card panel but keep the list it came from. */
+/** Drop the card overlay but keep the list it came from. */
 function clearCard() {
+  cancelScheduledCard()
   clearCloseTimer()
   const hover = $hover.get()
   if (hover !== null && hover.card !== null) {
@@ -128,9 +145,10 @@ function clearCard() {
 /**
  * Ask for the hover to be released. The timer re-checks the heartbeat first, so
  * a timer left over from another chip can never close a panel the pointer has
- * since moved onto, and a slow journey onto a panel never loses the race.
+ * since moved onto, and a slow journey never loses the race.
  */
 function releaseSlot() {
+  cancelScheduledCard()
   clearCloseTimer()
   closeTimer = setTimeout(() => {
     closeTimer = null
@@ -142,8 +160,9 @@ function releaseSlot() {
   }, HOVER_CLOSE_MS)
 }
 
-/** Release the hover now: escape, an outside click, or a board navigation. */
+/** Release the hover now: escape, a board navigation, or unmount. */
 function closeHover() {
+  cancelScheduledCard()
   clearCloseTimer()
   if ($hover.get() !== null) $hover.set(null)
 }
@@ -158,9 +177,23 @@ function slotUnder(event) {
   return chip ? chip.getAttribute('data-hwm-slot') : null
 }
 
-function cardUnder(event) {
-  const row = event.target?.closest?.('[data-hwm-card]')
-  return row ? row.getAttribute('data-hwm-card') : null
+// A row asks for its card after a rest on it, not at once.
+let openTimer = null
+
+function cancelScheduledCard() {
+  if (openTimer !== null) {
+    clearTimeout(openTimer)
+    openTimer = null
+  }
+}
+
+function scheduleCard(slot, card) {
+  markInside()
+  if (openTimer !== null) clearTimeout(openTimer)
+  openTimer = setTimeout(() => {
+    openTimer = null
+    hoverCard(slot, card)
+  }, CARD_OPEN_DWELL_MS)
 }
 
 // Traffic-light colors for the running state. Mid-saturation hues that stay
@@ -207,31 +240,35 @@ const LABEL_COLOR = 'var(--ui-text-quaternary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
 
 const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw' }
-const POPOVER_BODY_STYLE = {
+const LIST_BODY_STYLE = {
   display: 'flex',
   flexDirection: 'column',
   maxHeight: '19rem',
   overflowY: 'auto'
 }
-const POPOVER_NOTE_STYLE = { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.4, padding: '0.375rem' }
+const NOTE_STYLE = { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.4, padding: '0.375rem' }
 const COLUMN_STYLE = { display: 'flex', flexDirection: 'column' }
 const STACK_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.375rem' }
 const SECTION_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.25rem' }
 
-const PREVIEW_STYLE = { width: '26rem', maxWidth: '92vw' }
-const PREVIEW_BODY_STYLE = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '0.625rem',
-  maxHeight: '26rem',
-  overflowY: 'auto'
-}
-const PREVIEW_TITLE_STYLE = { fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.35 }
+// The card overlay: a fixed centered surface, sized by inline style so it does
+// not depend on a Tailwind utility the plugin's bundle may not carry. Height is
+// the dialog shell's own cap, with the body scrolling inside it.
+const CARD_STYLE = { width: 'min(50rem, 92vw)', maxWidth: '92vw' }
+// Drop the dialog shell's scrim: it would take the pointer and freeze the list
+// the card came from. Both classes beat the shell's own `bg-black/22` and
+// `pointer-events-auto` in the class merge, so the walk from a row to the
+// overlay and back stays open in both directions.
+const OVERLAY_PASS_THROUGH = 'pointer-events-none bg-transparent'
+const CARD_SCROLL_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '68vh', overflowY: 'auto' }
 const PILL_ROW_STYLE = { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }
+const COMMENT_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.125rem' }
+const MUTED_TEXT = { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.45 }
+const TINY_LABEL = { color: LABEL_COLOR, fontSize: '0.625rem' }
 
 // One entry per group, keyed by the backend's own group name: the chip's color
-// and the panels' dot color, so a red count opens a red-dotted list. The word
-// lives in the panel header, never on the chip.
+// and the list's dot color, so a red count opens a red-dotted list. The word
+// lives in the list header, never on the chip.
 const GROUPS = {
   blocked: { dot: RED, label: 'blocked', tone: 'bad' },
   waiting: { dot: AMBER, label: 'waiting', tone: 'warn' },
@@ -346,9 +383,9 @@ function useSummary(ctx, path, intervalMs) {
 }
 
 /**
- * The cards behind one count. Fetched only while its panel is open, so an idle
+ * The cards behind one count. Fetched only while its list is open, so an idle
  * statusbar stays silent. A connection whose plugin backend predates the route
- * answers 404, which lands here as `error` and the panel says so in one line
+ * answers 404, which lands here as `error` and the list says so in one line
  * instead of showing a wrong or empty list.
  */
 function useCards(ctx, group, enabled) {
@@ -369,7 +406,7 @@ function useCards(ctx, group, enabled) {
   }
 }
 
-/** One card in full, fetched only while its row is hovered. */
+/** One card in full, fetched only while it is the card on show. */
 function useCardDetail(ctx, id, enabled) {
   const query = useQuery({
     queryKey: [ID, 'card', id],
@@ -391,12 +428,12 @@ function useCardDetail(ctx, id, enabled) {
   }
 }
 
-// -- the card panel -----------------------------------------------------------
+// -- the card overlay ---------------------------------------------------------
 
 /**
  * The card's own text goes through the app's chat markdown renderer. A renderer
- * that cannot mount anywhere else must not take the whole footer item down with
- * it, so the fallback is the raw text in the app's code block.
+ * that cannot mount outside a transcript must not take the whole overlay down
+ * with it, so the fallback is the raw text in the app's code block.
  */
 class PreviewBoundary extends Component {
   constructor(props) {
@@ -425,7 +462,6 @@ function metaRows(card, now) {
     rows.push({ label, value: String(value) })
   }
 
-  push('id', card.id)
   push('assignee', card.assignee)
   push('created by', card.created_by)
   push('created', stampLabel(card.created_at, now))
@@ -439,7 +475,6 @@ function metaRows(card, now) {
   push('workspace', [card.workspace_kind, card.workspace_path].filter(Boolean).join('  '))
   push('branch', card.branch_name)
   push('model', [card.provider_override, card.model_override].filter(Boolean).join('  '))
-  push('goal loop', card.goal_mode ? 'on' : '')
   push('contract', card.completion_contract)
   return rows
 }
@@ -467,17 +502,10 @@ function commentsBody(comments) {
   return jsx('div', {
     style: STACK_STYLE,
     children: comments.recent.map((item, index) =>
-      jsxs(
-        'div',
-        {
-          key: `${item.author}-${String(item.created_at ?? index)}`,
-          style: { display: 'flex', flexDirection: 'column', gap: '0.125rem' }
-        },
-        [
-          jsx('span', { style: { color: LABEL_COLOR, fontSize: '0.625rem' }, children: item.author || 'someone' }),
-          jsx('span', { style: { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.4 }, children: item.body })
-        ]
-      )
+      jsxs('div', { key: `${item.author}-${String(item.created_at ?? index)}`, style: COMMENT_STYLE }, [
+        jsx('span', { style: TINY_LABEL, children: item.author || 'someone' }),
+        jsx('span', { style: MUTED_TEXT, children: item.body })
+      ])
     )
   })
 }
@@ -491,13 +519,14 @@ function commentsBody(comments) {
 function CardPreview({ detail, onOpen }) {
   if (!detail.card) {
     return jsx('div', {
-      style: POPOVER_NOTE_STYLE,
+      style: NOTE_STYLE,
       children: detail.error ? 'No card detail from this connection.' : 'Loading the card'
     })
   }
 
   const card = detail.card
   const now = Math.floor(Date.now() / 1000)
+  const body = typeof card.body === 'string' ? card.body.trim() : ''
 
   const pills = [
     jsx(PanelPill, { key: 'status', tone: statusTone(card.status), children: String(card.status ?? '') }),
@@ -505,36 +534,31 @@ function CardPreview({ detail, onOpen }) {
     card.goal_mode ? jsx(PanelPill, { key: 'goal', tone: 'muted', children: 'goal loop' }) : null
   ].filter(Boolean)
 
-  const body = typeof card.body === 'string' ? card.body.trim() : ''
-
+  // The app's own dialog header: a title and a description, so the shell reads
+  // as a dialog to assistive tech the same way every other dialog here does.
   const sections = [
-    jsxs(
-      'div',
-      {
-        key: 'head',
-        style: STACK_STYLE,
-        children: [
-          jsx('div', { style: PREVIEW_TITLE_STYLE, children: cardTitle(card) }),
-          jsx('div', { style: PILL_ROW_STYLE, children: pills })
-        ]
-      }
-    ),
-    jsx(PanelMeta, { key: 'meta', rows: metaRows(card, now) })
+    jsxs('div', { key: 'head', style: STACK_STYLE }, [
+      jsx(DialogTitle, { children: cardTitle(card) }),
+      jsxs('div', { style: PILL_ROW_STYLE }, [
+        jsx(DialogDescription, { children: `${String(card.id ?? '')}  in ${card.status ?? 'unknown'}` }),
+        ...pills
+      ])
+    ])
   ]
+
+  const rows = metaRows(card, now)
+  if (rows.length > 0) sections.push(jsx(PanelMeta, { key: 'meta', rows }))
 
   if (body) {
     sections.push(
-      jsx(
-        Section,
-        {
-          key: 'body',
-          label: 'description',
-          children: jsx(PreviewBoundary, {
-            fallback: jsx(PanelBlock, { children: body }),
-            children: jsx(MessageTextContent, { media: false, text: body })
-          })
-        }
-      )
+      jsx(Section, {
+        key: 'body',
+        label: 'description',
+        children: jsx(PreviewBoundary, {
+          fallback: jsx(PanelBlock, { children: body }),
+          children: jsx(MessageTextContent, { media: false, text: body })
+        })
+      })
     )
   }
 
@@ -544,11 +568,7 @@ function CardPreview({ detail, onOpen }) {
 
   if (card.last_failure_error) {
     sections.push(
-      jsx(Section, {
-        key: 'failure',
-        label: 'last failure',
-        children: jsx(PanelBlock, { children: card.last_failure_error })
-      })
+      jsx(Section, { key: 'failure', label: 'last failure', children: jsx(PanelBlock, { children: card.last_failure_error }) })
     )
   }
 
@@ -571,108 +591,112 @@ function CardPreview({ detail, onOpen }) {
       jsx(Section, {
         key: 'attachments',
         label: `attachments (${detail.attachments.count})`,
-        children: jsx('div', { style: POPOVER_NOTE_STYLE, children: detail.attachments.names.join('\n') })
+        children: jsx('div', { style: MUTED_TEXT, children: detail.attachments.names.join(', ') })
       })
     )
   }
 
-  sections.push(
-    jsx('div', {
-      key: 'open',
-      children: jsx(Button, { onClick: onOpen, size: 'sm', variant: 'outline', children: 'Open on the board' })
-    })
-  )
-
-  return jsx('div', { style: PREVIEW_BODY_STYLE, children: sections })
+  return jsxs('div', { style: CARD_SCROLL_STYLE }, [
+    ...sections,
+    jsx(DialogFooter, { key: 'footer' }, [
+      jsx(Button, { onClick: onOpen, size: 'sm', variant: 'outline', children: 'Open on the board' })
+    ])
+  ])
 }
 
 /**
- * One card row. Hovering it opens the card beside the row, which is what makes
- * the pair read like a side panel instead of a modal: the pointer travels from
- * the row onto the card panel and back without either closing.
+ * The card on show, as a centered overlay over the app. It floats in the middle
+ * of the screen rather than hanging off the row it came from, which is what
+ * makes it a large fixed target the pointer can simply walk onto.
+ *
+ * The app's dialog shell ships with a full screen scrim. That scrim takes the
+ * pointer, which would freeze the list behind it and make the walk between a row
+ * and the overlay one way only, so this overlay keeps the shell and drops the
+ * scrim: no dimming, no backdrop, and pointer events pass straight through to
+ * the app. It also holds no focus, so the composer keeps the caret while a card
+ * is being read. Escape, a click outside, or the shell's own close button still
+ * dismiss it.
  */
-function CardRow({ ctx, card, group, now, onOpen, slot }) {
-  const spec = GROUPS[group] ?? GROUPS.queued
-  const hover = useValue($hover)
-  const open = hover !== null && hover.slot === slot && hover.card === card.id
-  const detail = useCardDetail(ctx, card.id, open)
-  const dot = group === 'running' ? STATE_COLOR[card.worker_state] ?? spec.dot : spec.dot
+function CardPanel({ ctx, card, onOpen, onClose }) {
+  const detail = useCardDetail(ctx, card, card !== null)
 
-  const row = jsx(PanelListRow, {
-    active: open,
-    lead: jsx('span', { style: { ...DOT_STYLE, backgroundColor: dot } }),
-    meta: cardMeta(card, now),
-    onSelect: onOpen,
-    rowKey: String(card.id ?? cardTitle(card)),
-    title: cardTitle(card)
-  })
-
-  const trigger = jsx('div', {
-    'data-hwm-card': String(card.id ?? ''),
-    onPointerEnter: () => hoverCard(slot, card.id),
-    children: row
-  })
-
-  const panel = jsx(PopoverContent, {
-    align: 'start',
-    // A hover panel must never take focus away from the composer.
-    onOpenAutoFocus: event => event.preventDefault(),
-    onPointerEnter: markInside,
-    onPointerLeave: releaseSlot,
-    onPointerMove: markInside,
-    side: 'right',
-    sideOffset: 6,
-    style: PREVIEW_STYLE,
-    children: jsx(CardPreview, { detail, onOpen })
-  })
-
-  return jsxs(Popover, {
+  return jsx(Dialog, {
+    modal: false,
     onOpenChange: next => {
-      if (!next) clearCard()
+      if (!next) onClose()
     },
-    open,
-    children: [jsx(PopoverTrigger, { asChild: true, children: trigger }), open ? panel : null]
+    open: card !== null,
+    children: jsx(DialogContent, {
+      blurBackdrop: false,
+      // Read only, brief, and opened by a hover: it must never pull the caret
+      // out of the composer.
+      onOpenAutoFocus: event => event.preventDefault(),
+      onPointerEnter: markInside,
+      onPointerLeave: releaseSlot,
+      onPointerMove: markInside,
+      overlayClassName: OVERLAY_PASS_THROUGH,
+      style: CARD_STYLE,
+      children: card === null ? null : jsx(CardPreview, { detail, onOpen })
+    })
   })
 }
 
-function PopoverBody({ cards, ctx, error, group, loading, now, onOpen, slot, total }) {
-  if (error) {
-    return jsx('div', {
-      style: POPOVER_NOTE_STYLE,
-      children: 'This connection has no card list yet.'
+// -- the list -----------------------------------------------------------------
+
+/**
+ * One card row. Resting on it opens the card in the centered overlay, and the
+ * overlay replaces the previous card rather than stacking, so sweeping the list
+ * walks the overlay through each card.
+ */
+function CardRow({ card, group, now, onOpen, slot }) {
+  const spec = GROUPS[group] ?? GROUPS.queued
+  const hover = useValue($hover)
+  const active = hover !== null && hover.slot === slot && hover.card === card.id
+  const dot = group === 'running' ? STATE_COLOR[card.worker_state] ?? spec.dot : spec.dot
+
+  return jsx('div', {
+    'data-hwm-card': String(card.id ?? ''),
+    onPointerEnter: () => scheduleCard(slot, card.id),
+    onPointerLeave: cancelScheduledCard,
+    children: jsx(PanelListRow, {
+      active,
+      lead: jsx('span', { style: { ...DOT_STYLE, backgroundColor: dot } }),
+      meta: cardMeta(card, now),
+      onSelect: onOpen,
+      rowKey: String(card.id ?? cardTitle(card)),
+      title: cardTitle(card)
     })
+  })
+}
+
+function PopoverBody({ cards, error, group, loading, now, onOpen, slot, total }) {
+  if (error) {
+    return jsx('div', { style: NOTE_STYLE, children: 'This connection has no card list yet.' })
   }
 
   if (cards.length === 0) {
-    return jsx('div', {
-      style: POPOVER_NOTE_STYLE,
-      children: loading ? 'Loading cards' : 'No cards in this group.'
-    })
+    return jsx('div', { style: NOTE_STYLE, children: loading ? 'Loading cards' : 'No cards in this group.' })
   }
 
   // Every component here is RENDERED (`jsx(Type, props)`), never CALLED as a
   // plain function: a component that owns hooks must keep a stable hook order,
   // and the strip's group set changes from render to render.
   const rows = cards.map(card =>
-    jsx(CardRow, { card, ctx, group, key: String(card.id ?? cardTitle(card)), now, onOpen, slot })
+    jsx(CardRow, { card, group, key: String(card.id ?? cardTitle(card)), now, onOpen, slot })
   )
 
   if (total > cards.length) {
     rows.push(
-      jsx('div', {
-        key: 'more',
-        style: POPOVER_NOTE_STYLE,
-        children: `${total - cards.length} more on the board`
-      })
+      jsx('div', { key: 'more', style: NOTE_STYLE, children: `${total - cards.length} more on the board` })
     )
   }
 
-  return jsx('div', { style: POPOVER_BODY_STYLE, children: rows })
+  return jsx('div', { style: LIST_BODY_STYLE, children: rows })
 }
 
 /**
  * A count chip that opens its cards on hover. The hover is shared, so only one
- * panel of each kind is ever up, and both stay up while the pointer is on them.
+ * list and one card are ever up, and both stay up while the pointer is on them.
  * Focus opens the list too, so it is reachable from the keyboard.
  */
 function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot }) {
@@ -720,20 +744,11 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
     // but it cannot pull the hover back from the chip the pointer moved to.
     onPointerEnter: markInside,
     onPointerLeave: releaseSlot,
+    onPointerMove: markInside,
     side: 'top',
     sideOffset: 6,
     style: POPOVER_STYLE,
     children: jsxs('div', {
-      // The list owns which row is hovered, from the pointer event: leaving a
-      // row for the header closes the card panel without closing the list.
-      onPointerMove: event => {
-        const card = cardUnder(event)
-        if (card) hoverCard(slot, card)
-        else {
-          markInside()
-          clearCard()
-        }
-      },
       style: COLUMN_STYLE,
       children: [
         jsxs('div', {
@@ -745,7 +760,6 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
         }),
         jsx(PopoverBody, {
           cards,
-          ctx,
           error,
           group,
           loading,
@@ -775,6 +789,7 @@ function WorkerStrip({ ctx }) {
   useEffect(() => () => closeHover(), [])
 
   const { data, error } = useSummary(ctx, '/summary', SUMMARY_INTERVAL_MS)
+  const hover = useValue($hover)
 
   const groups = readGroups(data)
   const workers = readWorkers(data)
@@ -928,9 +943,12 @@ function WorkerStrip({ ctx }) {
   }
 
   // The strip decides which chip is hovered, from the pointer event. A chip
-  // handler alone loses the race whenever a panel sits over a neighbouring
-  // chip: the pointer never reaches that chip, so the old panel stays up.
-  return jsx('span', {
+  // handler alone loses the race whenever a panel sits over a neighbouring chip:
+  // the pointer never reaches that chip, so the old panel stays up.
+  //
+  // The card overlay rides along as a sibling: it is portalled to the page, so
+  // it floats in the middle of the screen and never inherits the strip's layout.
+  return jsxs('span', {
     onPointerLeave: releaseSlot,
     onPointerMove: event => {
       const slot = slotUnder(event)
@@ -938,7 +956,23 @@ function WorkerStrip({ ctx }) {
       else markInside()
     },
     style: STRIP_STYLE,
-    children: items
+    children: [
+      ...items,
+      jsx(CardPanel, {
+        card: hover !== null ? hover.card : null,
+        ctx,
+        key: 'card-panel',
+        onClose: clearCard,
+        onOpen: () => {
+          closeHover()
+          try {
+            host.navigate(BOARD_PATH)
+          } catch {
+            // Bridge unavailable: never break the statusbar.
+          }
+        }
+      })
+    ]
   })
 }
 

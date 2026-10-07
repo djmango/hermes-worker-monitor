@@ -286,11 +286,50 @@ def test_the_desktop_half_renders_its_components_instead_of_calling_them():
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
-    for component in ("CardPreview", "CardRow", "CountWithCards", "PopoverBody", "Section"):
+    for component in ("CardPanel", "CardPreview", "CardRow", "CountWithCards", "PopoverBody", "Section"):
         call = f"{component}({{"
         definition = f"function {component}({{"
         assert source.count(call) == source.count(definition), f"{component} is called as a plain function"
         assert f"jsx({component}," in source, f"{component} is never rendered"
+
+
+def test_the_card_overlay_is_the_apps_own_centered_dialog():
+    """The card floats in the middle of the screen, not off the row it came from.
+
+    A panel hanging off a row is a small moving target that can land off screen
+    or behind the list, and reaching it with a pointer is a race. The overlay is
+    the app's own dialog shell instead: one fixed surface in the middle, drawn
+    from the app's own parts.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "jsx(Dialog, {" in source
+    for part in ("DialogContent", "DialogTitle", "DialogDescription", "DialogFooter"):
+        assert part in source, part
+    # Only the group list is a popover, and there is one card overlay for the
+    # whole strip rather than one per row.
+    assert source.count("jsxs(Popover, {") == 1
+    assert source.count("jsx(CardPanel,") == 1
+    # A hover must not take the caret out of the composer.
+    assert source.count("onOpenAutoFocus: event => event.preventDefault()") >= 2
+    # Nor may the shell's scrim take the pointer: the list behind the overlay
+    # has to stay live, or the walk from a row to the card is one way only.
+    assert "modal: false" in source
+    assert "blurBackdrop: false" in source
+    assert "pointer-events-none bg-transparent" in source
+
+
+def test_a_card_opens_after_a_rest_on_a_row_not_at_once():
+    """Sweeping the list must not flash a full screen overlay at every row."""
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "scheduleCard(slot, card.id)" in source
+    assert "onPointerLeave: cancelScheduledCard" in source
+    match = re.search(r"const CARD_OPEN_DWELL_MS = (\d[\d_]*)", source)
+    assert match, "no dwell before a card opens"
+    assert int(match.group(1).replace("_", "")) >= 80
 
 
 def test_no_em_dashes_in_shipped_sources():

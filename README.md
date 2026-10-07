@@ -11,8 +11,8 @@ One compact strip on the right side of the Desktop footer:
 - Cards that stopped and need a person come first, in red.
 - The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.
 - Hover any count for the cards behind it: a list of that group's cards, each row with the card's dot, title, id, and age. The rows are the app's own list row from the Desktop plugin SDK, so the footer and the Kanban page cannot drift apart.
-- Hover a card in that list for the whole card beside it: the title and its pills, the fields, the description as markdown, the newest run, the recent comments, and the attachments. It is the same set the board's own drawer shows, built from the app's own panel parts and the chat markdown renderer. Read-only: the actions stay one click away in the drawer, because a desktop plugin cannot reach the Kanban plugin's own API.
-- Both panels stay up while the pointer is on them, so the pointer can travel from a chip onto a list, and from a row onto the card, without either closing. The grace is 700ms.
+- Hover a card in that list for the whole card in a centered overlay over the app, the way a fuzzy finder floats in the middle of the screen: the title and its pills, the fields, the description as markdown, the newest run, the recent comments, and the attachments. It is the same set the board's own drawer shows, built from the app's own dialog shell, panel parts and chat markdown renderer. Read-only: the actions stay one click away in the drawer, because a desktop plugin cannot reach the Kanban plugin's own API.
+- Nothing needs a precise pointer. The card opens after a short rest on a row, so sweeping the list does not flash overlays, and both layers stay up while the pointer is on any of the strip, the list, or the overlay. A pointer crossing the gap to the centered overlay is mid journey, not gone, and the grace is 1000ms.
 - Click any count, or any card in the list, to open the Kanban board page inside the app. There is no menu to open and no second screen to read.
 - A group with no cards is left out, so the strip stays short. A quiet board shows the queue, or `idle`.
 
@@ -42,10 +42,10 @@ Counted, against upstream v0.2.2:
 
 | | Upstream | This fork |
 |---|---|---|
-| Product lines (backend + desktop) | 1,488 | 1,688 |
+| Product lines (backend + desktop) | 1,488 | 1,707 |
 | Backend (`dashboard/`) | 682 | 726 |
-| Desktop (`desktop/plugin.js`) | 796 | 962 |
-| Tests | 838 | 714 |
+| Desktop (`desktop/plugin.js`) | 796 | 981 |
+| Tests | 838 | 748 |
 
 The comparison is against the fork at 0.2.1. The hover preview and `GET /card` are additions upstream has no counterpart for, so this fork is no longer the smaller of the two.
 
