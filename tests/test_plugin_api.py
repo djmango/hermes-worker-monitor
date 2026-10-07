@@ -401,24 +401,50 @@ def test_the_core_kanban_counter_is_hidden_by_one_scoped_rule():
     assert "document.getElementById(CORE_COUNTER_STYLE_ID)" in source
 
 
-def test_the_card_leaves_at_once_while_everything_else_keeps_the_grace():
-    """The way into the card earns a grace; the way out does not.
+def test_the_card_and_the_list_leave_at_once_while_the_chip_keeps_the_grace():
+    """Both layers are left at once. Only the trip IN gets a grace.
 
-    The pointer needs time to cross the screen to the card, so the close timer is
-    a heartbeat. Once the card has been read, moving off it should be finished: no
-    timer. The list keeps the grace, so the pointer can still come back down to
-    another row.
+    The pointer needs time to cross from a chip to the list, and from a row up to
+    the card, so those trips keep the heartbeat. Leaving either layer does not: if
+    a card is on show when the list goes, the card keeps the bounded trip and the
+    timer ends it, so nothing lingers and nothing sticks.
     """
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
     assert "onPointerLeave: releaseCardNow," in source
-    assert "function releaseCardNow() {" in source
-    # The card overlay must NOT leave on the shared grace timer.
-    card_panel = source[source.index("function CardPanel({") :]
-    card_panel = card_panel[: card_panel.index("\n}\n")]
-    assert "releaseSlot" not in card_panel.replace("releaseCardNow", "")
-    assert "clearCard()" in source[source.index("function releaseCardNow() {") :][:200]
+    assert "onPointerLeave: releaseList," in source
+    assert "function releaseList(event) {" in source
+    assert "function releaseCardNow(event) {" in source
+    # The chip keeps its grace: that one is the trip into the list.
+    assert "onPointerLeave: releaseSlot," in source
+    # A card on show outlives the list, bounded by the same trip timer.
+    list_leave = source[source.index("function releaseList(event) {") :][:700]
+    assert "releaseSlot()" in list_leave
+    assert "card: hover.card" in list_leave
+    # Neither layer may leave on the shared grace timer: exactly two call sites
+    # keep it, the chip and the strip, and both are the trip in.
+    assert source.count("onPointerLeave: releaseSlot,") == 2
+    assert source.count("onPointerLeave: releaseList,") == 1
+    assert source.count("onPointerLeave: releaseCardNow,") == 1
+
+
+def test_a_leave_under_a_stationary_pointer_does_not_close_a_panel():
+    """Rows arriving replace the element under the pointer, and that fires a leave.
+
+    Closing at once on any leave would make a panel vanish while it is being read,
+    which is what a first cut of this did. Both instant closers check the pointer's
+    own position first, and every layer names itself for that check.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "function stillInside(event) {" in source
+    assert "document.elementsFromPoint(x, y)" in source
+    assert source.count("if (stillInside(event)) {") == 2
+    for layer in ("'data-hwm-layer': 'strip'", "'data-hwm-layer': 'list'", "'data-hwm-layer': 'card'"):
+        assert layer in source, layer
+    assert "'[data-hwm-layer]'" in source
 
 
 def test_no_em_dashes_in_shipped_sources():

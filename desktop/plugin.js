@@ -139,9 +139,32 @@ function clearCard() {
   cancelScheduledCard()
   clearCloseTimer()
   const hover = $hover.get()
-  if (hover !== null && hover.card !== null) {
-    $hover.set({ slot: hover.slot, card: null })
+  if (hover === null || hover.card === null) return
+  $hover.set(hover.slot === null ? null : { slot: hover.slot, card: null })
+}
+
+/**
+ * Leave the list. Its grace was for the trip IN, and that trip is done, so the
+ * list goes at once. A card on show is the one thing that survives, because the
+ * pointer leaving a row may be on its way up to the card: the list drops, the
+ * card keeps the same heartbeat bounded trip, and if the pointer never arrives
+ * the timer ends it. Nothing stuck, nothing lingering.
+ */
+function releaseList(event) {
+  if (stillInside(event)) {
+    markInside()
+    return
   }
+  cancelScheduledCard()
+  clearCloseTimer()
+  const hover = $hover.get()
+  if (hover === null) return
+  if (hover.card === null) {
+    $hover.set(null)
+    return
+  }
+  $hover.set({ slot: null, card: hover.card })
+  releaseSlot()
 }
 
 /**
@@ -163,13 +186,34 @@ function releaseSlot() {
 }
 
 /**
+ * True when the pointer is still over our chrome, whatever a leave event claims.
+ *
+ * A browser fires pointerout with no related target whenever the element under a
+ * STATIONARY pointer is replaced, and rows arriving or a card re-rendering does
+ * exactly that. Left alone, that reads as the pointer leaving, and a panel that
+ * closes at once would vanish while it is being read. The pointer's own position
+ * is the honest answer, so ask it: every layer names itself with data-hwm-layer.
+ */
+function stillInside(event) {
+  const x = event?.clientX
+  const y = event?.clientY
+  if (!Number.isFinite(x) || !Number.isFinite(y) || (x === 0 && y === 0)) return false
+  const under = document.elementsFromPoint(x, y)
+  return under.some(node => Boolean(node.closest?.('[data-hwm-layer]')))
+}
+
+/**
  * Leave the card. The trip IN earns a grace, because a pointer crossing the
  * screen to a panel is on its way there; the way OUT does not, because once the
  * card has been read and the pointer moves off it, it should be gone. The list
  * it came from keeps the usual grace, so walking from the card back down to
  * another row still works and the list is what closes last.
  */
-function releaseCardNow() {
+function releaseCardNow(event) {
+  if (stillInside(event)) {
+    markInside()
+    return
+  }
   cancelScheduledCard()
   clearCard()
   releaseSlot()
@@ -692,6 +736,7 @@ function CardPanel({ ctx, card, onOpen, onClose }) {
     children: jsx(DialogContent, {
       // Read only, brief, and opened by a hover: it must never pull the caret
       // out of the composer.
+      'data-hwm-layer': 'card',
       onOpenAutoFocus: event => event.preventDefault(),
       onPointerEnter: markInside,
       onPointerLeave: releaseCardNow,
@@ -810,8 +855,9 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
     // HOLD, never take: the panel keeps itself open while the pointer is on it,
     // but it cannot pull the hover back from the chip the pointer moved to.
     onPointerEnter: markInside,
-    onPointerLeave: releaseSlot,
+    onPointerLeave: releaseList,
     onPointerMove: markInside,
+    'data-hwm-layer': 'list',
     side: 'top',
     sideOffset: 6,
     style: POPOVER_STYLE,
@@ -1015,6 +1061,7 @@ function WorkerStrip({ ctx }) {
   // The card overlay rides along as a sibling: it is portalled to the page, so
   // it floats in the middle of the screen and never inherits the strip's layout.
   return jsxs('span', {
+    'data-hwm-layer': 'strip',
     onPointerLeave: releaseSlot,
     onPointerMove: event => {
       const slot = slotUnder(event)
