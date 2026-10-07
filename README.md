@@ -9,6 +9,7 @@ One compact strip on the right side of the Desktop footer:
 ```
 
 - Cards that stopped and need a person come first in line with the board: the strip follows the board's own column order, so it reads backlog, scheduled, running, blocked, review, done today, left to right. Blocked counts stay red, wherever they sit.
+- Out is instant, in is not. Moving off the card closes it at once, because once it is read the pointer is done with it. The grace only covers the trip toward it, and the list keeps that grace so a card can be swapped for another row.
 - Only one Kanban readout in the footer. The app's own Kanban counter sits beside the strip and reports the same board (a project glyph, running plus ready). It cannot be unregistered or hidden by a plugin, so the strip hides it with one scoped stylesheet rule. Remove `HIDE_CORE_COUNTER_CSS` to bring it back.
 - No divider mark: the strip is a plain sequence now, and a lone dash beside the app's own counter read as part of it.
 - The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.

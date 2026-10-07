@@ -401,6 +401,26 @@ def test_the_core_kanban_counter_is_hidden_by_one_scoped_rule():
     assert "document.getElementById(CORE_COUNTER_STYLE_ID)" in source
 
 
+def test_the_card_leaves_at_once_while_everything_else_keeps_the_grace():
+    """The way into the card earns a grace; the way out does not.
+
+    The pointer needs time to cross the screen to the card, so the close timer is
+    a heartbeat. Once the card has been read, moving off it should be finished: no
+    timer. The list keeps the grace, so the pointer can still come back down to
+    another row.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "onPointerLeave: releaseCardNow," in source
+    assert "function releaseCardNow() {" in source
+    # The card overlay must NOT leave on the shared grace timer.
+    card_panel = source[source.index("function CardPanel({") :]
+    card_panel = card_panel[: card_panel.index("\n}\n")]
+    assert "releaseSlot" not in card_panel.replace("releaseCardNow", "")
+    assert "clearCard()" in source[source.index("function releaseCardNow() {") :][:200]
+
+
 def test_no_em_dashes_in_shipped_sources():
     """House rule for this fork: no em dashes in code, docs, or UI copy."""
     root = Path(__file__).resolve().parent.parent

@@ -162,6 +162,19 @@ function releaseSlot() {
   }, HOVER_CLOSE_MS)
 }
 
+/**
+ * Leave the card. The trip IN earns a grace, because a pointer crossing the
+ * screen to a panel is on its way there; the way OUT does not, because once the
+ * card has been read and the pointer moves off it, it should be gone. The list
+ * it came from keeps the usual grace, so walking from the card back down to
+ * another row still works and the list is what closes last.
+ */
+function releaseCardNow() {
+  cancelScheduledCard()
+  clearCard()
+  releaseSlot()
+}
+
 /** Release the hover now: escape, a board navigation, or unmount. */
 function closeHover() {
   cancelScheduledCard()
@@ -681,7 +694,7 @@ function CardPanel({ ctx, card, onOpen, onClose }) {
       // out of the composer.
       onOpenAutoFocus: event => event.preventDefault(),
       onPointerEnter: markInside,
-      onPointerLeave: releaseSlot,
+      onPointerLeave: releaseCardNow,
       onPointerMove: markInside,
       overlayClassName: OVERLAY_DIM,
       style: CARD_STYLE,
