@@ -502,10 +502,14 @@ function commentsBody(comments) {
   return jsx('div', {
     style: STACK_STYLE,
     children: comments.recent.map((item, index) =>
-      jsxs('div', { key: `${item.author}-${String(item.created_at ?? index)}`, style: COMMENT_STYLE }, [
-        jsx('span', { style: TINY_LABEL, children: item.author || 'someone' }),
-        jsx('span', { style: MUTED_TEXT, children: item.body })
-      ])
+      jsxs('div', {
+        key: `${item.author}-${String(item.created_at ?? index)}`,
+        style: COMMENT_STYLE,
+        children: [
+          jsx('span', { style: TINY_LABEL, children: item.author || 'someone' }),
+          jsx('span', { style: MUTED_TEXT, children: item.body })
+        ]
+      })
     )
   })
 }
@@ -537,13 +541,20 @@ function CardPreview({ detail, onOpen }) {
   // The app's own dialog header: a title and a description, so the shell reads
   // as a dialog to assistive tech the same way every other dialog here does.
   const sections = [
-    jsxs('div', { key: 'head', style: STACK_STYLE }, [
-      jsx(DialogTitle, { children: cardTitle(card) }),
-      jsxs('div', { style: PILL_ROW_STYLE }, [
-        jsx(DialogDescription, { children: `${String(card.id ?? '')}  in ${card.status ?? 'unknown'}` }),
-        ...pills
-      ])
-    ])
+    jsxs('div', {
+      key: 'head',
+      style: STACK_STYLE,
+      children: [
+        jsx(DialogTitle, { children: cardTitle(card) }),
+        jsxs('div', {
+          style: PILL_ROW_STYLE,
+          children: [
+            jsx(DialogDescription, { children: `${String(card.id ?? '')}  in ${card.status ?? 'unknown'}` }),
+            ...pills
+          ]
+        })
+      ]
+    })
   ]
 
   const rows = metaRows(card, now)
@@ -596,12 +607,16 @@ function CardPreview({ detail, onOpen }) {
     )
   }
 
-  return jsxs('div', { style: CARD_SCROLL_STYLE }, [
-    ...sections,
-    jsx(DialogFooter, { key: 'footer' }, [
-      jsx(Button, { onClick: onOpen, size: 'sm', variant: 'outline', children: 'Open on the board' })
-    ])
-  ])
+  return jsxs('div', {
+    style: CARD_SCROLL_STYLE,
+    children: [
+      ...sections,
+      jsx(DialogFooter, {
+        key: 'footer',
+        children: [jsx(Button, { onClick: onOpen, size: 'sm', variant: 'outline', children: 'Open on the board' })]
+      })
+    ]
+  })
 }
 
 /**

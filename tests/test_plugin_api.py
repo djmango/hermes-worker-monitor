@@ -332,6 +332,22 @@ def test_a_card_opens_after_a_rest_on_a_row_not_at_once():
     assert int(match.group(1).replace("_", "")) >= 80
 
 
+def test_no_jsx_call_passes_children_as_the_key_argument():
+    """`jsx(type, props, children)` is a trap: the third slot is the element KEY.
+
+    React's automatic runtime takes children inside props, so a third argument is
+    read as the key and the children are dropped without a word. A card panel
+    built that way opens as an empty box, which is exactly what it looks like:
+    nothing. Seen live.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    for number, line in enumerate(source.splitlines(), start=1):
+        assert not re.search(r"jsx[sx]?\(.*\}, \[", line), f"children passed as the key argument on line {number}"
+    assert "children:" in source
+
+
 def test_no_em_dashes_in_shipped_sources():
     """House rule for this fork: no em dashes in code, docs, or UI copy."""
     root = Path(__file__).resolve().parent.parent
