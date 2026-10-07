@@ -239,6 +239,26 @@ const QUIET_COLOR = 'var(--ui-text-tertiary)'
 // below the card itself (--z-modal is 130), so the scrim never darkens the list
 // the pointer is walking back to. Numeric, not a class: the plugin must not
 // depend on a Tailwind utility the app's prebuilt bundle may not carry.
+// The app's own Kanban counter (the core plugin, order 80) sits beside this
+// strip and reports the same board: a project glyph and the number of running
+// plus ready cards, which this strip already covers. Hiding it the honest way is
+// not open to a plugin: a render style statusbar item is never listed in the
+// bar's own show/hide menu (that menu lists only declarative items that name
+// themselves with a label), and one plugin cannot unregister another plugin's
+// contribution. So the one live way to drop the duplicate is a stylesheet rule,
+// scoped to the statusbar and to the single item that carries the project glyph.
+// Delete this constant and the counter comes straight back.
+const CORE_COUNTER_STYLE_ID = 'hermes-worker-monitor-hide-core-counter'
+const HIDE_CORE_COUNTER_CSS = '[data-slot="statusbar"] button:has(.codicon-project){display:none}'
+
+function hideCoreCounter() {
+  if (document.getElementById(CORE_COUNTER_STYLE_ID) !== null) return
+  const style = document.createElement('style')
+  style.id = CORE_COUNTER_STYLE_ID
+  style.textContent = HIDE_CORE_COUNTER_CSS
+  document.head.appendChild(style)
+}
+
 const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 125 }
 const LIST_BODY_STYLE = {
   display: 'flex',
@@ -1019,6 +1039,7 @@ export default {
   // turn it off in Capabilities, Plugins.
   defaultEnabled: true,
   register(ctx) {
+    hideCoreCounter()
     ctx.register({
       id: 'summary',
       area: STATUSBAR_AREAS.right,

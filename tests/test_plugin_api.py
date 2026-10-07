@@ -382,6 +382,25 @@ def test_the_strip_follows_the_boards_own_column_order():
     assert plugin_api.GROUP_ORDER[0] == "queued", "the board's first columns are the backlog"
 
 
+def test_the_core_kanban_counter_is_hidden_by_one_scoped_rule():
+    """The app's own counter reports the same board the strip does.
+
+    A render style statusbar item is never listed in the bar's own show/hide menu
+    (that menu lists declarative items that name themselves), and one plugin
+    cannot unregister another plugin's contribution, so the duplicate goes with a
+    single stylesheet rule. It has to stay scoped to the statusbar and to the one
+    item carrying the project glyph, and it has to stay reversible.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "const CORE_COUNTER_STYLE_ID" in source
+    assert '[data-slot="statusbar"] button:has(.codicon-project){display:none}' in source
+    assert source.count("HIDE_CORE_COUNTER_CSS") == 2
+    assert "hideCoreCounter()" in source
+    assert "document.getElementById(CORE_COUNTER_STYLE_ID)" in source
+
+
 def test_no_em_dashes_in_shipped_sources():
     """House rule for this fork: no em dashes in code, docs, or UI copy."""
     root = Path(__file__).resolve().parent.parent
