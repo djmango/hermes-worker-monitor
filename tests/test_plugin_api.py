@@ -314,13 +314,13 @@ def test_the_card_overlay_is_the_apps_own_centered_dialog():
     # A hover must not take the caret out of the composer.
     assert source.count("onOpenAutoFocus: event => event.preventDefault()") >= 2
     # The app's dim is kept, but it must not take the pointer, and the list
-    # rides above it so the scrim never darkens the list the pointer is walking
-    # back to.
+    # rides above both the dim and the card so the scrim never darkens it and the
+    # card never covers a row the pointer wants to click.
     assert "modal: false" in source
     assert "const OVERLAY_DIM = 'pointer-events-none'" in source
     assert "blurBackdrop: false" not in source
     assert "bg-transparent" not in source
-    assert "zIndex: 125" in source
+    assert "zIndex: 135" in source
 
 
 def test_every_card_in_a_list_is_warmed_before_it_is_hovered():
@@ -418,10 +418,27 @@ def test_the_card_and_the_list_leave_at_once_while_the_chip_keeps_the_grace():
     assert "function releaseCardNow(event) {" in source
     # The chip keeps its grace: that one is the trip into the list.
     assert "onPointerLeave: releaseSlot," in source
-    # A card on show outlives the list, bounded by the same trip timer.
-    list_leave = source[source.index("function releaseList(event) {") :][:700]
-    assert "releaseSlot()" in list_leave
-    assert "card: hover.card" in list_leave
+    # A card on show holds the hover for the trip; nothing on show exits on the
+    # short beat instead of waiting out a trip nobody is taking.
+    list_leave = source[source.index("function releaseList(event) {") :][:900]
+    assert "releaseAfter(hover.card === null ? LIST_EXIT_MS : HOVER_CLOSE_MS)" in list_leave
+
+
+def test_the_list_sits_above_the_card_so_its_rows_stay_clickable():
+    """The centered card overlaps the list's upper rows.
+
+    Anything sitting over a row swallows that row's click, and the row is what
+    opens the board, so the list rides above the card (135, over the card's 130
+    and the dim's 120). A row click goes to openBoard, which navigates.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "zIndex: 135" in source
+    assert "onSelect: onOpen" in source
+    assert "host.navigate(BOARD_PATH)" in source
+    # The rows get that handler, and the strip hands every list its navigator.
+    assert "onOpen: openBoard" in source
     # Neither layer may leave on the shared grace timer: exactly two call sites
     # keep it, the chip and the strip, and both are the trip in.
     assert source.count("onPointerLeave: releaseSlot,") == 2

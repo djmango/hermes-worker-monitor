@@ -96,6 +96,10 @@ const CARD_OPEN_DWELL_MS = 130
 // pointer crossing it is mid journey, not gone.
 const HOVER_CLOSE_MS = 1000
 
+// Leaving the list with nothing else on show: a beat, not a wait. There is
+// nowhere the pointer could be heading, so the list simply goes.
+const LIST_EXIT_MS = 300
+
 // ONE hover at a time: the open chip and, inside it, the card on show. Every
 // part reports into this one atom, so moving anywhere else closes what it left
 // behind instead of leaving panels across the screen.
@@ -144,11 +148,14 @@ function clearCard() {
 }
 
 /**
- * Leave the list. Its grace was for the trip IN, and that trip is done, so the
- * list goes at once. A card on show is the one thing that survives, because the
- * pointer leaving a row may be on its way up to the card: the list drops, the
- * card keeps the same heartbeat bounded trip, and if the pointer never arrives
- * the timer ends it. Nothing stuck, nothing lingering.
+ * Leave the list. There are two ways out and they are not the same: with a card
+ * on show the pointer may be on its way to that card, so the hover is held for
+ * the trip; with nothing on show there is nowhere to travel and the list leaves
+ * on a short beat.
+ *
+ * Both check the pointer's own position first, because a leave fired under a
+ * STATIONARY pointer is the browser replacing the element under it, not a real
+ * exit, and closing on that would make the list vanish while it is being read.
  */
 function releaseList(event) {
   if (stillInside(event)) {
@@ -156,15 +163,14 @@ function releaseList(event) {
     return
   }
   cancelScheduledCard()
-  clearCloseTimer()
   const hover = $hover.get()
   if (hover === null) return
-  if (hover.card === null) {
-    $hover.set(null)
-    return
-  }
-  $hover.set({ slot: null, card: hover.card })
-  releaseSlot()
+  // A card on show means the pointer may be crossing to it, and that crossing is
+  // long: the whole hover is held for the trip, refreshed by every move onto the
+  // card and ended by the timer if the pointer never arrives. With nothing on
+  // show there is nowhere to go, so the list leaves on the short beat instead of
+  // waiting out a trip nobody is taking.
+  releaseAfter(hover.card === null ? LIST_EXIT_MS : HOVER_CLOSE_MS)
 }
 
 /**
@@ -172,17 +178,21 @@ function releaseList(event) {
  * a timer left over from another chip can never close a panel the pointer has
  * since moved onto, and a slow journey never loses the race.
  */
-function releaseSlot() {
-  cancelScheduledCard()
+function releaseAfter(delayMs) {
   clearCloseTimer()
   closeTimer = setTimeout(() => {
     closeTimer = null
-    if (Date.now() - lastInsideAt < HOVER_CLOSE_MS) {
-      releaseSlot()
+    if (Date.now() - lastInsideAt < delayMs) {
+      releaseAfter(delayMs)
       return
     }
     $hover.set(null)
-  }, HOVER_CLOSE_MS)
+  }, delayMs)
+}
+
+function releaseSlot() {
+  cancelScheduledCard()
+  releaseAfter(HOVER_CLOSE_MS)
 }
 
 /**
@@ -292,10 +302,6 @@ const DOT_STYLE = { width: '0.375rem', height: '0.375rem', flex: '0 0 auto', bor
 const LABEL_COLOR = 'var(--ui-text-quaternary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
 
-// The list rides above the card overlay's dim (--z-modal-backdrop is 120) and
-// below the card itself (--z-modal is 130), so the scrim never darkens the list
-// the pointer is walking back to. Numeric, not a class: the plugin must not
-// depend on a Tailwind utility the app's prebuilt bundle may not carry.
 // The app's own Kanban counter (the core plugin, order 80) sits beside this
 // strip and reports the same board: a project glyph and the number of running
 // plus ready cards, which this strip already covers. Hiding it the honest way is
@@ -316,7 +322,13 @@ function hideCoreCounter() {
   document.head.appendChild(style)
 }
 
-const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 125 }
+// The list rides above the card (--z-modal is 130) and above the dim behind
+// it (--z-modal-backdrop is 120). It has to be on top: the centered card overlaps
+// the list's upper rows, and anything sitting over a row swallows that row's
+// click, so the row that opens the board has to be what the pointer actually
+// hits. Numeric, not a class: the plugin must not depend on a Tailwind utility
+// the app's prebuilt bundle may not carry.
+const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 135 }
 const LIST_BODY_STYLE = {
   display: 'flex',
   flexDirection: 'column',
