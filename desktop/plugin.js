@@ -239,7 +239,11 @@ const DOT_STYLE = { width: '0.375rem', height: '0.375rem', flex: '0 0 auto', bor
 const LABEL_COLOR = 'var(--ui-text-quaternary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
 
-const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw' }
+// The list rides above the card overlay's dim (--z-modal-backdrop is 120) and
+// below the card itself (--z-modal is 130), so the scrim never darkens the list
+// the pointer is walking back to. Numeric, not a class: the plugin must not
+// depend on a Tailwind utility the app's prebuilt bundle may not carry.
+const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 125 }
 const LIST_BODY_STYLE = {
   display: 'flex',
   flexDirection: 'column',
@@ -255,11 +259,12 @@ const SECTION_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.25rem'
 // not depend on a Tailwind utility the plugin's bundle may not carry. Height is
 // the dialog shell's own cap, with the body scrolling inside it.
 const CARD_STYLE = { width: 'min(50rem, 92vw)', maxWidth: '92vw' }
-// Drop the dialog shell's scrim: it would take the pointer and freeze the list
-// the card came from. Both classes beat the shell's own `bg-black/22` and
-// `pointer-events-auto` in the class merge, so the walk from a row to the
-// overlay and back stays open in both directions.
-const OVERLAY_PASS_THROUGH = 'pointer-events-none bg-transparent'
+// The dialog shell's own scrim stays: the app dims and blurs what is behind a
+// dialog, and a card floating over a dimmed app is the look. What it must not do
+// is take the POINTER, or the list the card came from would freeze and the walk
+// between a row and the card would be one way only. `pointer-events-none` beats
+// the shell's own `pointer-events-auto` in the class merge.
+const OVERLAY_DIM = 'pointer-events-none'
 const CARD_SCROLL_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '68vh', overflowY: 'auto' }
 const PILL_ROW_STYLE = { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }
 const COMMENT_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.125rem' }
@@ -404,6 +409,18 @@ function useCards(ctx, group, enabled) {
     loading: query.isPending === true,
     total: toCount(query.data?.total)
   }
+}
+
+/**
+ * Warms one card's cached detail before anyone hovers it. The list is on screen
+ * already, so this fetch hides behind reading the list, and the hover then
+ * paints from cache instead of opening with a loading line. It is one small read
+ * only route per row, on a local connection, and React Query holds each answer
+ * for the same window the overlay would have used.
+ */
+function CardPrefetch({ ctx, id }) {
+  useCardDetail(ctx, id, true)
+  return null
 }
 
 /** One card in full, fetched only while it is the card on show. */
@@ -624,13 +641,13 @@ function CardPreview({ detail, onOpen }) {
  * of the screen rather than hanging off the row it came from, which is what
  * makes it a large fixed target the pointer can simply walk onto.
  *
- * The app's dialog shell ships with a full screen scrim. That scrim takes the
- * pointer, which would freeze the list behind it and make the walk between a row
- * and the overlay one way only, so this overlay keeps the shell and drops the
- * scrim: no dimming, no backdrop, and pointer events pass straight through to
- * the app. It also holds no focus, so the composer keeps the caret while a card
- * is being read. Escape, a click outside, or the shell's own close button still
- * dismiss it.
+ * The app's dialog shell ships with a full screen scrim, and this overlay keeps
+ * it: the app behind is dimmed and blurred, which is what a floating card should
+ * look like. The scrim does not take the pointer, so the list the card came from
+ * stays live and the walk between a row and the card works both ways. The
+ * overlay holds no focus either, so the composer keeps the caret while a card is
+ * being read. Escape, a click outside, or the shell's own close button dismiss
+ * it.
  */
 function CardPanel({ ctx, card, onOpen, onClose }) {
   const detail = useCardDetail(ctx, card, card !== null)
@@ -642,14 +659,13 @@ function CardPanel({ ctx, card, onOpen, onClose }) {
     },
     open: card !== null,
     children: jsx(DialogContent, {
-      blurBackdrop: false,
       // Read only, brief, and opened by a hover: it must never pull the caret
       // out of the composer.
       onOpenAutoFocus: event => event.preventDefault(),
       onPointerEnter: markInside,
       onPointerLeave: releaseSlot,
       onPointerMove: markInside,
-      overlayClassName: OVERLAY_PASS_THROUGH,
+      overlayClassName: OVERLAY_DIM,
       style: CARD_STYLE,
       children: card === null ? null : jsx(CardPreview, { detail, onOpen })
     })
@@ -684,7 +700,7 @@ function CardRow({ card, group, now, onOpen, slot }) {
   })
 }
 
-function PopoverBody({ cards, error, group, loading, now, onOpen, slot, total }) {
+function PopoverBody({ cards, ctx, error, group, loading, now, onOpen, slot, total }) {
   if (error) {
     return jsx('div', { style: NOTE_STYLE, children: 'This connection has no card list yet.' })
   }
@@ -696,8 +712,13 @@ function PopoverBody({ cards, error, group, loading, now, onOpen, slot, total })
   // Every component here is RENDERED (`jsx(Type, props)`), never CALLED as a
   // plain function: a component that owns hooks must keep a stable hook order,
   // and the strip's group set changes from render to render.
-  const rows = cards.map(card =>
-    jsx(CardRow, { card, group, key: String(card.id ?? cardTitle(card)), now, onOpen, slot })
+  // Every card in this list is warmed in the same pass, before the pointer
+  // reaches a row, so the overlay opens on a cache hit.
+  const rows = cards.map(card => jsx(CardPrefetch, { ctx, id: card.id, key: `warm-${card.id}` }))
+  rows.push(
+    ...cards.map(card =>
+      jsx(CardRow, { card, group, key: String(card.id ?? cardTitle(card)), now, onOpen, slot })
+    )
   )
 
   if (total > cards.length) {
@@ -775,6 +796,7 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
         }),
         jsx(PopoverBody, {
           cards,
+          ctx,
           error,
           group,
           loading,

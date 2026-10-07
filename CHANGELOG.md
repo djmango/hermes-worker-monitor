@@ -18,9 +18,12 @@
 - The card is a centered overlay over the whole app, not a panel hanging off the row: a fixed, large target in the middle of the screen, drawn with the app's own dialog shell (title, description, footer and close button included). A panel that follows its row is a small moving target that can land off screen or behind the list, which made reaching it a race.
 - A card opens after a 130ms rest on a row, so sweeping the list does not flash a full screen overlay at every row it crosses. The overlay replaces the previous card rather than stacking.
 - The hover grace is 1000ms, because the journey from the list to the middle of the screen is the long one.
+- The app's own dim and blur stay behind the card, and the list rides above that dim (z 125, between the backdrop's 120 and the card's 130) so the scrim never darkens the list the pointer is walking back to. The scrim does not take the pointer, so the list the card came from stays live.
+- Every card in an open list is fetched before it is hovered, so the overlay paints from cache instead of opening with a loading line. It is one small read only route per row on a local connection, and it hides behind the moment the pointer spends reading the list.
+- Fixed: the overlay opened as an empty box. Children were passed as the third argument of `jsx`/`jsxs`, which is the element KEY in React's automatic runtime, so every section was dropped without a word. A test now fails on any `jsx` call whose third argument is an array.
 - New backend route `GET /card?id=<task id>`. It returns the one card that was asked for, its newest run, its three newest comments and its attachment names, with the free text capped. An unknown id answers 404, and a quoted id is data, never SQL.
 - One hover drives both layers, so the card overlay and the list go up and down together, and the card follows the row under the pointer instead of piling up.
-- Tests: 40.
+- Tests: 42.
 
 ## 0.2.1
 

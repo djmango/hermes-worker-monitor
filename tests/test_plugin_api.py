@@ -313,11 +313,29 @@ def test_the_card_overlay_is_the_apps_own_centered_dialog():
     assert source.count("jsx(CardPanel,") == 1
     # A hover must not take the caret out of the composer.
     assert source.count("onOpenAutoFocus: event => event.preventDefault()") >= 2
-    # Nor may the shell's scrim take the pointer: the list behind the overlay
-    # has to stay live, or the walk from a row to the card is one way only.
+    # The app's dim is kept, but it must not take the pointer, and the list
+    # rides above it so the scrim never darkens the list the pointer is walking
+    # back to.
     assert "modal: false" in source
-    assert "blurBackdrop: false" in source
-    assert "pointer-events-none bg-transparent" in source
+    assert "const OVERLAY_DIM = 'pointer-events-none'" in source
+    assert "blurBackdrop: false" not in source
+    assert "bg-transparent" not in source
+    assert "zIndex: 125" in source
+
+
+def test_every_card_in_a_list_is_warmed_before_it_is_hovered():
+    """A hover must paint from cache, not open with a loading line.
+
+    The list is on screen when the pointer arrives, so the fetch hides behind
+    reading the list. The warmer and the overlay share one hook, which means one
+    cache key: a hover cannot miss what was already fetched.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "function CardPrefetch({ ctx, id })" in source
+    assert "jsx(CardPrefetch, { ctx, id: card.id" in source
+    assert source.count("useCardDetail(") == 3
 
 
 def test_a_card_opens_after_a_rest_on_a_row_not_at_once():
