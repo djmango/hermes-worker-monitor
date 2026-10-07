@@ -5,10 +5,11 @@ Kanban board groups and worker health in the Hermes Desktop footer. Worker-only 
 One compact strip on the right side of the Desktop footer:
 
 ```text
-[1 blocked]  [10 running]  21 queued   2 scheduled   26 done today
+   21 queued   2 scheduled   10 running   [1 blocked]   26 done today
 ```
 
-- Cards that stopped and need a person come first, in red.
+- Cards that stopped and need a person come first in line with the board: the strip follows the board's own column order, so it reads backlog, scheduled, running, blocked, review, done today, left to right. Blocked counts stay red, wherever they sit.
+- No divider mark: the strip is a plain sequence now, and a lone dash beside the app's own counter read as part of it.
 - The running count carries a state dot: green for active, amber when a card stalls, red when a worker loops. The dot color follows the worst running card, so a stall or a loop is visible without opening anything.
 - Hover any count for the cards behind it: a list of that group's cards, each row with the card's dot, title, id, and age. The rows are the app's own list row from the Desktop plugin SDK, so the footer and the Kanban page cannot drift apart.
 - Hover a card in that list for the whole card in a centered overlay over the app, the way a fuzzy finder floats in the middle of the screen: the title and its pills, the fields, the description as markdown, the newest run, the recent comments, and the attachments. It is the same set the board's own drawer shows, built from the app's own dialog shell, panel parts and chat markdown renderer. Read-only: the actions stay one click away in the drawer, because a desktop plugin cannot reach the Kanban plugin's own API.

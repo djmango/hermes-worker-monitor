@@ -366,6 +366,22 @@ def test_no_jsx_call_passes_children_as_the_key_argument():
     assert "children:" in source
 
 
+def test_the_strip_follows_the_boards_own_column_order():
+    """The strip reads left to right like the board it reports on.
+
+    The board's columns are triage, todo, scheduled, ready, running, blocked,
+    review, done, so the strip runs backlog, scheduled, running, blocked (the
+    dependency half included), review, then the day's finished cards. The
+    backend's GROUP_ORDER is the one order, and the strip has to match it.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    slots = [name for name in re.findall(r"slot: '([a-z_]+)'", source) if name in plugin_api.GROUP_ORDER]
+    assert slots == list(plugin_api.GROUP_ORDER), slots
+    assert plugin_api.GROUP_ORDER[0] == "queued", "the board's first columns are the backlog"
+
+
 def test_no_em_dashes_in_shipped_sources():
     """House rule for this fork: no em dashes in code, docs, or UI copy."""
     root = Path(__file__).resolve().parent.parent

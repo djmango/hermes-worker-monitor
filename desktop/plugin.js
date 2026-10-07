@@ -1,9 +1,11 @@
 /**
  * Hermes Worker Monitor: desktop half.
  *
- * One footer item (STATUSBAR_AREAS.right) showing the Kanban board groups. The
- * running count carries a state dot, colored by the worst running worker
- * (looping beats stalled beats active).
+ * One footer item (STATUSBAR_AREAS.right) showing the Kanban board groups, in
+ * the board's own column order (its backlog first, then work, then the states a
+ * person still has to look at, then the day's finished cards). The running count
+ * carries a state dot, colored by the worst running worker (looping beats
+ * stalled beats active).
  *
  * Hovering a count opens a popover with the cards behind that number. Hovering
  * one of those rows opens the whole card in a centered overlay over the app, the
@@ -229,12 +231,6 @@ const STRIP_STYLE = {
   whiteSpace: 'nowrap',
   gap: '0.125rem'
 }
-const SEPARATOR_STYLE = {
-  width: '1px',
-  height: '0.6875rem',
-  flex: '0 0 auto',
-  backgroundColor: 'var(--ui-stroke-quaternary)'
-}
 const DOT_STYLE = { width: '0.375rem', height: '0.375rem', flex: '0 0 auto', borderRadius: '999px' }
 const LABEL_COLOR = 'var(--ui-text-quaternary)'
 const QUIET_COLOR = 'var(--ui-text-tertiary)'
@@ -273,7 +269,9 @@ const TINY_LABEL = { color: LABEL_COLOR, fontSize: '0.625rem' }
 
 // One entry per group, keyed by the backend's own group name: the chip's color
 // and the list's dot color, so a red count opens a red-dotted list. The word
-// lives in the list header, never on the chip.
+// lives in the list header, never on the chip. The strip declares them in the
+// backend's GROUP_ORDER, which is the board's own column order; a test fails if
+// the two drift.
 const GROUPS = {
   blocked: { dot: RED, label: 'blocked', tone: 'bad' },
   waiting: { dot: AMBER, label: 'waiting', tone: 'warn' },
@@ -856,53 +854,6 @@ function WorkerStrip({ ctx }) {
 
   const items = []
 
-  if (groups.blocked > 0) {
-    items.push(
-      jsx(CountWithCards, {
-        key: 'blocked',
-        slot: 'blocked',
-        ctx,
-        count: groups.blocked,
-        group: 'blocked',
-        icon: jsx(icons.AlertTriangle, { className: 'shrink-0 size-3.5' }),
-        label: 'blocked',
-        tone: RED
-      })
-    )
-  }
-
-  if (groups.waiting > 0) {
-    items.push(
-      jsx(CountWithCards, {
-        key: 'waiting',
-        slot: 'waiting',
-        ctx,
-        count: groups.waiting,
-        group: 'waiting',
-        icon: jsx(icons.Clock, { className: 'shrink-0 size-3.5', style: { color: QUIET_COLOR } }),
-        label: 'waiting',
-        tone: QUIET_COLOR
-      })
-    )
-  }
-
-  if (groups.running > 0) {
-    items.push(
-      jsx(CountWithCards, {
-        key: 'running',
-        slot: 'running',
-        ctx,
-        count: groups.running,
-        group: 'running',
-        label: 'running',
-        showDot: true,
-        tone: stateColor(workers.state)
-      })
-    )
-  }
-
-  if (items.length > 0) items.push(jsx('span', { key: 'separator', style: SEPARATOR_STYLE }))
-
   if (groups.queued > 0) {
     items.push(
       jsx(CountWithCards, {
@@ -928,6 +879,51 @@ function WorkerStrip({ ctx }) {
         group: 'scheduled',
         icon: jsx(icons.Clock, { className: 'shrink-0 size-3', style: { color: LABEL_COLOR } }),
         label: 'scheduled',
+        tone: QUIET_COLOR
+      })
+    )
+  }
+
+  if (groups.running > 0) {
+    items.push(
+      jsx(CountWithCards, {
+        key: 'running',
+        slot: 'running',
+        ctx,
+        count: groups.running,
+        group: 'running',
+        label: 'running',
+        showDot: true,
+        tone: stateColor(workers.state)
+      })
+    )
+  }
+
+  if (groups.blocked > 0) {
+    items.push(
+      jsx(CountWithCards, {
+        key: 'blocked',
+        slot: 'blocked',
+        ctx,
+        count: groups.blocked,
+        group: 'blocked',
+        icon: jsx(icons.AlertTriangle, { className: 'shrink-0 size-3.5' }),
+        label: 'blocked',
+        tone: RED
+      })
+    )
+  }
+
+  if (groups.waiting > 0) {
+    items.push(
+      jsx(CountWithCards, {
+        key: 'waiting',
+        slot: 'waiting',
+        ctx,
+        count: groups.waiting,
+        group: 'waiting',
+        icon: jsx(icons.Clock, { className: 'shrink-0 size-3.5', style: { color: QUIET_COLOR } }),
+        label: 'waiting',
         tone: QUIET_COLOR
       })
     )

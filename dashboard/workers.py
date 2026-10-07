@@ -24,9 +24,15 @@ QUEUED_STATUSES = ("todo", "ready", "triage")
 # Blocked on another card. The rest of the blocked column needs a person.
 DEPENDENCY_KINDS = ("dependency",)
 
-# The footer groups, in strip order. ``done_today`` is a time window rather than
-# a status, which is why it is named apart from the status columns.
-GROUP_ORDER = ("blocked", "waiting", "running", "queued", "scheduled", "review", "done_today")
+# The footer groups, in strip order. It follows the board's own column order
+# (triage, todo, scheduled, ready, running, blocked, review, done), so the strip
+# and the board read the same way from left to right: backlog first, then work,
+# then the two states a person still has to look at, then the day's finished
+# cards. ``queued`` covers the board's triage, todo and ready columns, and
+# ``waiting`` is the blocked column's dependency half. ``done_today`` is a time
+# window rather than a status, which is why it is named apart from the status
+# columns.
+GROUP_ORDER = ("queued", "scheduled", "running", "blocked", "waiting", "review", "done_today")
 
 BOARD_PATH = "/kanban"
 
