@@ -74,6 +74,10 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-worker-monitor'
 
+// How long to keep looking for a card on the board after landing there. The
+// board fetches and paints its columns first, and a local fetch is quick.
+const CARD_OPEN_TIMEOUT_MS = 2500
+
 // The board page inside the app. `host.navigate` drives the app router.
 const BOARD_PATH = '/kanban'
 
@@ -393,6 +397,45 @@ const GROUPS = {
 }
 
 const STATUS_TONE = { blocked: 'bad', cancelled: 'bad', done: 'good', running: 'good', review: 'warn' }
+
+/**
+ * Open ONE card on the board, after landing there.
+ *
+ * The board offers no deep link for a single card: its drawer opens from local
+ * state inside the page, a card carries no id in the DOM, and the plugin SDK has
+ * no hook for it. So this does what a person does, and it checks its own work:
+ * click a card whose text starts with the title, then look for the card's short id
+ * on the page, which only its drawer shows. If the id is not there, try the next
+ * candidate. That makes the many other draggable cards, and any chat message that
+ * happens to quote the title, harmless: a wrong click costs one attempt and the
+ * loop moves on.
+ *
+ * A card that cannot be found leaves the board as the destination, which is where
+ * a plain click landed before this existed.
+ */
+function openCardOnBoard(card) {
+  const title = String(card?.title ?? '').trim()
+  const short = String(card?.id ?? '').replace(/^t_/, '').slice(0, 6)
+  if (!title) return
+
+  const isOpen = () => Boolean(short) && String(document.body.innerText ?? '').includes(short)
+  const candidates = () =>
+    Array.from(document.querySelectorAll('[draggable="true"]')).filter(
+      node => node.dataset.hwmTried !== '1' && String(node.textContent ?? '').trim().startsWith(title)
+    )
+
+  const deadline = Date.now() + CARD_OPEN_TIMEOUT_MS
+  const step = () => {
+    if (isOpen()) return
+    const next = candidates()[0]
+    if (next) {
+      next.dataset.hwmTried = '1'
+      next.click()
+    }
+    if (Date.now() < deadline) setTimeout(step, 220)
+  }
+  setTimeout(step, 150)
+}
 
 // -- pure helpers -------------------------------------------------------------
 
@@ -738,7 +781,14 @@ function CardPreview({ detail, onOpen }) {
       ...sections,
       jsx(DialogFooter, {
         key: 'footer',
-        children: [jsx(Button, { onClick: onOpen, size: 'sm', variant: 'outline', children: 'Open on the board' })]
+        children: [
+          jsx(Button, {
+            onClick: () => onOpen(detail.card),
+            size: 'sm',
+            variant: 'outline',
+            children: 'Open on the board'
+          })
+        ]
       })
     ]
   })
@@ -802,7 +852,7 @@ function CardRow({ card, group, now, onOpen, slot }) {
       active,
       lead: jsx('span', { style: { ...DOT_STYLE, backgroundColor: dot } }),
       meta: cardMeta(card, now),
-      onSelect: onOpen,
+      onSelect: () => onOpen(card),
       rowKey: String(card.id ?? cardTitle(card)),
       title: cardTitle(card)
     })
@@ -852,13 +902,14 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
 
   const show = () => hoverSlot(slot)
 
-  const openBoard = () => {
+  const openBoard = card => {
     closeHover()
     try {
       host.navigate(BOARD_PATH)
     } catch {
       // Bridge unavailable: never break the statusbar.
     }
+    openCardOnBoard(card)
   }
 
   const children = []
@@ -871,7 +922,7 @@ function CountWithCards({ ctx, count, group, icon, label, slot, tone, showDot })
     className: ITEM_CLASS,
     'data-hwm-slot': slot,
     onBlur: releaseSlot,
-    onClick: openBoard,
+    onClick: () => openBoard(),
     onFocus: show,
     onPointerEnter: show,
     onPointerLeave: releaseSlot,

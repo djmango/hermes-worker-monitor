@@ -2,6 +2,8 @@
 
 ## 0.2.2
 
+- Clicking a card in a list now opens THAT card, not just the board. The board has no deep link for a single card (its drawer opens from local state, a card carries no id in the DOM, and the SDK has no hook for it), so the strip does what a person does and then checks its own work: click a card whose text starts with the title, then look for the card's short id on the page, which only its drawer shows. A wrong click (the page has hundreds of draggable nodes, chat messages quoting titles among them) costs one attempt and the loop tries the next candidate. Measured live: a row clicked in a 19 row list opened that card's drawer within 1 second.
+- Fixed: the running dot read amber for live workers. Staleness came from a tool call gap of five minutes, which cannot see inside a long tool or a long generation. It now reads the dispatcher heartbeat, the board's own signal and its two minute threshold, so the footer dot and the board cannot disagree.
 - Hovering a count now opens a popover with the cards behind that number instead of a text tooltip. Each row carries the card's dot, title, id, and age, and the rows are the app's own `PanelListRow` with `PanelPill` and `PanelSectionLabel`, so the footer and the app's Kanban list cannot drift apart.
 - The `Click for the board` sentence is gone, and the tooltip with it. A count that needed a whole sentence to explain itself was not carrying its weight.
 - The popover header shows the group's real total, and a capped list says how many more are on the board. A long group never reads as the whole board.

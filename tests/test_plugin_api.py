@@ -447,9 +447,35 @@ def test_the_card_sits_on_top_and_can_never_reach_the_list():
     # The card is above the list, and the list above the dim.
     assert "zIndex: 125" in source
     # And a row click still opens the board.
-    assert "onSelect: onOpen" in source
+    assert "onSelect: () => onOpen(card)" in source
     assert "host.navigate(BOARD_PATH)" in source
     assert "onOpen: openBoard" in source
+
+
+def test_a_row_click_opens_that_card_on_the_board():
+    """The board has no deep link for one card, so the click is made for you.
+
+    Its drawer opens from local state inside the page, a card carries no id in the
+    DOM, and the plugin SDK has no hook for it. So the row hands the card's own
+    title to the navigator, which lands on the board and then clicks the card whose
+    text starts with that title. A title it cannot find leaves the board as the
+    destination rather than doing nothing.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
+    ).read_text(encoding="utf-8")
+    assert "function openCardOnBoard(card) {" in source
+    assert "onSelect: () => onOpen(card)" in source
+    assert "openCardOnBoard(card)" in source
+    assert "querySelectorAll('[draggable=\"true\"]')" in source
+    assert "const CARD_OPEN_TIMEOUT_MS = 2500" in source
+    # It checks its own work: the card's short id, which only its drawer shows.
+    assert "includes(short)" in source
+    assert "node.dataset.hwmTried !== '1'" in source
+    # The chip opens the board with no card picked, and the card's own button
+    # opens the card it is showing.
+    assert "onClick: () => openBoard()" in source
+    assert "onClick: () => onOpen(detail.card)" in source
 
 
 def test_no_em_dashes_in_shipped_sources():
