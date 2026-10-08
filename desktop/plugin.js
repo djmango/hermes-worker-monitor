@@ -328,11 +328,14 @@ function hideCoreCounter() {
 // click, so the row that opens the board has to be what the pointer actually
 // hits. Numeric, not a class: the plugin must not depend on a Tailwind utility
 // the app's prebuilt bundle may not carry.
-const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 135 }
+const POPOVER_STYLE = { width: '22rem', maxWidth: '90vw', zIndex: 125 }
+// Capped so the list's whole band stays under about 16rem: the card's geometry
+// (see CARD_STYLE) is measured against that, so a taller list would break the
+// guarantee that the two never overlap.
 const LIST_BODY_STYLE = {
   display: 'flex',
   flexDirection: 'column',
-  maxHeight: '19rem',
+  maxHeight: '14rem',
   overflowY: 'auto'
 }
 const NOTE_STYLE = { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.4, padding: '0.375rem' }
@@ -340,17 +343,35 @@ const COLUMN_STYLE = { display: 'flex', flexDirection: 'column' }
 const STACK_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.375rem' }
 const SECTION_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.25rem' }
 
-// The card overlay: a fixed centered surface, sized by inline style so it does
-// not depend on a Tailwind utility the plugin's bundle may not carry. Height is
-// the dialog shell's own cap, with the body scrolling inside it.
-const CARD_STYLE = { width: 'min(50rem, 92vw)', maxWidth: '92vw' }
+// The card overlay: a fixed surface across the middle, sized by inline style so
+// it does not depend on a Tailwind utility the plugin's bundle may not carry.
+//
+// The cap is the point. The list is anchored above the statusbar and is at most
+// about 16rem tall, so a card centred at 38 percent of the viewport and capped
+// at 100vh minus 26rem can never reach that band, on any screen size. That is
+// what lets the card be the surface ON TOP (z 130 over the list's 125) while
+// every row in the list stays clickable: an uncapped dialog would reach down into
+// the list and swallow the row clicks.
+// `translate`, not `transform`: the dialog shell centres itself with Tailwind's
+// translate utilities, which in v4 set the standalone `translate` property. A
+// `transform` of the same shape would not replace it, it would ADD to it, and the
+// card would sit a full width and height away from where it belongs.
+const CARD_STYLE = {
+  width: 'min(50rem, 92vw)',
+  maxWidth: '92vw',
+  maxHeight: 'calc(100vh - 26rem)',
+  top: '38%',
+  translate: '-50% -50%'
+}
 // The dialog shell's own scrim stays: the app dims and blurs what is behind a
 // dialog, and a card floating over a dimmed app is the look. What it must not do
 // is take the POINTER, or the list the card came from would freeze and the walk
 // between a row and the card would be one way only. `pointer-events-none` beats
 // the shell's own `pointer-events-auto` in the class merge.
 const OVERLAY_DIM = 'pointer-events-none'
-const CARD_SCROLL_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '68vh', overflowY: 'auto' }
+// No cap and no scroll of its own: the dialog shell owns the height and its body
+// box scrolls, so the card cannot grow past the cap above.
+const CARD_SCROLL_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.75rem' }
 const PILL_ROW_STYLE = { alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }
 const COMMENT_STYLE = { display: 'flex', flexDirection: 'column', gap: '0.125rem' }
 const MUTED_TEXT = { color: QUIET_COLOR, fontSize: '0.6875rem', lineHeight: 1.45 }

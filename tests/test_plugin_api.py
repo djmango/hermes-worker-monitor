@@ -320,7 +320,7 @@ def test_the_card_overlay_is_the_apps_own_centered_dialog():
     assert "const OVERLAY_DIM = 'pointer-events-none'" in source
     assert "blurBackdrop: false" not in source
     assert "bg-transparent" not in source
-    assert "zIndex: 135" in source
+    assert "zIndex: 125" in source
 
 
 def test_every_card_in_a_list_is_warmed_before_it_is_hovered():
@@ -424,44 +424,32 @@ def test_the_card_and_the_list_leave_at_once_while_the_chip_keeps_the_grace():
     assert "releaseAfter(hover.card === null ? LIST_EXIT_MS : HOVER_CLOSE_MS)" in list_leave
 
 
-def test_the_list_sits_above_the_card_so_its_rows_stay_clickable():
-    """The centered card overlaps the list's upper rows.
+def test_the_card_sits_on_top_and_can_never_reach_the_list():
+    """The card is the surface on top, and the two panels never overlap.
 
-    Anything sitting over a row swallows that row's click, and the row is what
-    opens the board, so the list rides above the card (135, over the card's 130
-    and the dim's 120). A row click goes to openBoard, which navigates.
+    The list is anchored above the statusbar and capped at 14rem of rows. The card
+    is centred at 38 percent of the viewport and capped at 100vh minus 26rem, so
+    it stays clear of that band on any screen size. That is what lets the card be
+    on top while every row stays clickable: a centered dialog with no cap reached
+    down into the list and swallowed the row clicks, so clicking a card did
+    nothing at all.
     """
     source = (
         Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
     ).read_text(encoding="utf-8")
-    assert "zIndex: 135" in source
+    assert "maxHeight: 'calc(100vh - 26rem)'" in source
+    assert "top: '38%'" in source
+    # `translate`, not `transform`: v4's centring uses the standalone property,
+    # so a transform of the same shape adds to it and puts the card off screen.
+    assert "translate: '-50% -50%'" in source
+    assert "transform: 'translate(-50%, -50%)'" not in source
+    assert "maxHeight: '14rem'" in source
+    # The card is above the list, and the list above the dim.
+    assert "zIndex: 125" in source
+    # And a row click still opens the board.
     assert "onSelect: onOpen" in source
     assert "host.navigate(BOARD_PATH)" in source
-    # The rows get that handler, and the strip hands every list its navigator.
     assert "onOpen: openBoard" in source
-    # Neither layer may leave on the shared grace timer: exactly two call sites
-    # keep it, the chip and the strip, and both are the trip in.
-    assert source.count("onPointerLeave: releaseSlot,") == 2
-    assert source.count("onPointerLeave: releaseList,") == 1
-    assert source.count("onPointerLeave: releaseCardNow,") == 1
-
-
-def test_a_leave_under_a_stationary_pointer_does_not_close_a_panel():
-    """Rows arriving replace the element under the pointer, and that fires a leave.
-
-    Closing at once on any leave would make a panel vanish while it is being read,
-    which is what a first cut of this did. Both instant closers check the pointer's
-    own position first, and every layer names itself for that check.
-    """
-    source = (
-        Path(__file__).resolve().parent.parent / "desktop" / "plugin.js"
-    ).read_text(encoding="utf-8")
-    assert "function stillInside(event) {" in source
-    assert "document.elementsFromPoint(x, y)" in source
-    assert source.count("if (stillInside(event)) {") == 2
-    for layer in ("'data-hwm-layer': 'strip'", "'data-hwm-layer': 'list'", "'data-hwm-layer': 'card'"):
-        assert layer in source, layer
-    assert "'[data-hwm-layer]'" in source
 
 
 def test_no_em_dashes_in_shipped_sources():
