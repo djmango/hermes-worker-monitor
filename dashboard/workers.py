@@ -12,7 +12,16 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-# A worker with no tool call for this long is stalled.
+# A worker whose dispatcher heartbeat is older than this is stalled. It is the
+# BOARD's own rule and threshold (the amber arc on the kanban page goes stale at
+# two minutes, and a card with no heartbeat at all is never called stale), so the
+# footer dot and the board cannot disagree about a worker.
+HEARTBEAT_STALE_S = 120
+
+# Fallback stall rule for a board old enough to have no heartbeat column: no tool
+# call for this long. It is a poorer signal, because it cannot see inside a tool
+# that is still running or a long generation, so it is only used when the
+# heartbeat is missing.
 STALL_AFTER_S = 300
 
 # The same tool with the same arguments this many times in a row is a loop.
@@ -68,16 +77,26 @@ def is_repeated_tool_loop(events: Iterable[Mapping[str, Any]], minimum: int = LO
     return run_length >= minimum
 
 
-def card_state(events: Iterable[Mapping[str, Any]], *, now: int) -> str:
+def card_state(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    now: int,
+    heartbeat_at: float | None = None,
+) -> str:
     """One card's health: loop beats stalled, stalled beats active.
 
-    A card with no activity signal at all reads as active. A running card whose
-    events cannot be read is a gap in the data, not a fault in the worker, and
-    the footer must not cry wolf for it.
+    Staleness comes from the dispatcher's heartbeat, the same signal the board
+    paints its amber arc from, so a long tool or a long generation is not mistaken
+    for a dead worker. A card with no heartbeat at all reads as active: the board
+    does not call that stale either, and the footer must not cry wolf for a gap in
+    the data. The tool call gap is only a fallback, for a board with no heartbeat
+    column.
     """
     ordered = sorted(events, key=lambda event: float(event.get("timestamp") or 0))
     if is_repeated_tool_loop(ordered):
         return "loop"
+    if heartbeat_at is not None:
+        return "stalled" if now - float(heartbeat_at) > HEARTBEAT_STALE_S else "active"
     if not ordered:
         return "active"
     last = float(ordered[-1].get("timestamp") or 0)
@@ -96,7 +115,11 @@ def summarize_workers(
     for task in tasks:
         card_id = str(task["id"])
         total += 1
-        state = card_state(activity_by_card.get(card_id, ()), now=now)
+        state = card_state(
+            activity_by_card.get(card_id, ()),
+            now=now,
+            heartbeat_at=task.get("last_heartbeat_at"),
+        )
         counts["looping" if state == "loop" else state] += 1
     # Worst state first: the strip colors itself from this.
     if counts["looping"]:

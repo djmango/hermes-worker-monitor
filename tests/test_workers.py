@@ -5,6 +5,7 @@ from dashboard.workers import (
     GROUP_ORDER,
     build_summary_response,
     card_group,
+    HEARTBEAT_STALE_S,
     card_state,
     hash_arguments,
     is_repeated_tool_loop,
@@ -52,6 +53,31 @@ def test_card_state_loop_beats_stalled_and_stall_threshold_is_a_boundary():
     assert card_state([event("terminal", {}, NOW - 301)], now=NOW) == "stalled"
     # No activity signal at all is a gap in the data, not a fault.
     assert card_state([], now=NOW) == "active"
+
+
+def test_card_state_reads_the_board_heartbeat_not_a_tool_gap():
+    """The dot follows the board's own rule: the dispatcher heartbeat, 2 minutes.
+
+    Tool calls are a poorer signal. A worker halfway through a long build, or a
+    long generation, has made no tool call for minutes while being perfectly
+    alive, and a first cut of this painted the running count amber for it.
+    """
+    fresh = [event("terminal", {}, NOW - 900)]
+    # A fresh heartbeat outvotes a stale looking tool gap.
+    assert card_state(fresh, now=NOW, heartbeat_at=NOW - 30) == "active"
+    # And a stale heartbeat is stale, whatever the tool log says.
+    assert card_state([event("terminal", {}, NOW - 5)], now=NOW, heartbeat_at=NOW - 121) == "stalled"
+    # The threshold is the board's own: 2 minutes, a boundary either way.
+    assert card_state([], now=NOW, heartbeat_at=NOW - 120) == "active"
+    assert card_state([], now=NOW, heartbeat_at=NOW - 121) == "stalled"
+    # A missing heartbeat is not a fault: the board does not call that stale.
+    assert card_state([], now=NOW, heartbeat_at=None) == "active"
+    # A loop still beats a healthy heartbeat.
+    repeated = [event("terminal", {"command": "ls"}, NOW - index) for index in range(4)]
+    assert card_state(repeated, now=NOW, heartbeat_at=NOW) == "loop"
+    # Without a heartbeat column, the old tool gap rule still answers.
+    assert card_state([event("terminal", {}, NOW - 301)], now=NOW) == "stalled"
+    assert HEARTBEAT_STALE_S == 120
 
 
 def test_summary_counts_workers_by_state_and_reports_the_worst():

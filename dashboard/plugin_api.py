@@ -156,11 +156,16 @@ def _load_done_today(now: float | None = None) -> int:
 
 def _load_running_tasks() -> list[dict[str, Any]]:
     with closing(_readonly_connection(_kanban_database())) as connection:
+        available = {str(row[1]) for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
+        # ``last_heartbeat_at`` is the dispatcher's own liveness signal, and the
+        # board's health rule reads it (see workers.card_state). An older board
+        # without the column still answers.
+        wanted = [name for name in ("id", "assignee", "started_at", "last_heartbeat_at") if name in available]
         rows = connection.execute(
-            "SELECT id, assignee, started_at FROM tasks WHERE status = ? ORDER BY started_at, id",
+            f"SELECT {', '.join(wanted)} FROM tasks WHERE status = ? ORDER BY started_at, id",
             ("running",),
         ).fetchall()
-    return [{"id": row[0], "assignee": row[1], "started_at": row[2]} for row in rows]
+    return [dict(zip(wanted, row)) for row in rows]
 
 
 # -- one group's cards --------------------------------------------------------
